@@ -33,7 +33,7 @@ from folium.plugins import HeatMap
 import streamlit.components.v1 as components
 
 # ---------------------------------------------------------------- page setup
-APP_VERSION = "3.3"
+APP_VERSION = "V3.3"
 
 st.set_page_config(
     page_title="GPS Signal Heatmap",

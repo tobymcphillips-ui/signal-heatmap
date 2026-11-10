@@ -13,13 +13,13 @@ flow. From here on, changes are logged properly.
 ## v5.6
 
 **Reverted**
-- The forced blue theme from v5.5 (the start-up override and the colours
-  in `config.toml`). It recoloured Streamlit's own tags, radios, sliders
-  and buttons cyan, which is not how v4.6 looks on the deployment. Those
-  widgets are back to Streamlit's default accents and the page is back to
-  Streamlit's dark theme; the app's own panels, buttons and charts keep
-  the cyan and navy palette.
-- `config.toml` now pins only the dark base.
+- v5.5's theme override. It forced Streamlit's own widgets (tags, radios,
+  sliders, tab underlines, form buttons) to cyan, which made everything
+  blue. The v4.6 look has always been Streamlit's own accent on those
+  widgets with the app's cyan on its own panels and buttons, because the
+  cyan theme in `config.toml` was never applied on the deployment. The
+  override code and its tests are gone; `config.toml` only pins
+  `base = "dark"` (so a light browser still gets a dark page).
 
 ## v5.5
 

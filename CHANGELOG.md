@@ -10,6 +10,17 @@ Buffered fixes views, the drill-down and "where to look" suggestion
 tabs, and client export; v4.0 introduced the landing-page-into-sidebar
 flow. From here on, changes are logged properly.
 
+## v5.6
+
+**Reverted**
+- The forced blue theme from v5.5 (the start-up override and the colours
+  in `config.toml`). It recoloured Streamlit's own tags, radios, sliders
+  and buttons cyan, which is not how v4.6 looks on the deployment. Those
+  widgets are back to Streamlit's default accents and the page is back to
+  Streamlit's dark theme; the app's own panels, buttons and charts keep
+  the cyan and navy palette.
+- `config.toml` now pins only the dark base.
+
 ## v5.5
 
 **Removed**

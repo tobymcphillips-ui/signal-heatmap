@@ -16,7 +16,7 @@ import folium
 from folium.plugins import HeatMap
 import streamlit.components.v1 as components
 
-APP_VERSION = "v5.5"
+APP_VERSION = "v5.6"
 
 _HAS_DATA = st.session_state.get("df") is not None
 
@@ -26,42 +26,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded" if _HAS_DATA else "collapsed",
 )
-
-_APP_THEME = {
-    "base": "dark",
-    "primaryColor": "#4CC9F0",
-    "backgroundColor": "#0B1016",
-    "secondaryBackgroundColor": "#121A22",
-    "textColor": "#DCE6EE",
-    "font": "sans serif",
-}
-
-
-def _theme_missing():
-    try:
-        return any(st.get_option(f"theme.{k}") != v
-                   for k, v in _APP_THEME.items())
-    except Exception:
-        return False
-
-
-if _theme_missing() and st.session_state.get("_theme_reruns", 0) < 1:
-    st.session_state["_theme_reruns"] = 1
-    try:
-        for _k, _v in _APP_THEME.items():
-            st._config.set_option(f"theme.{_k}", _v)
-        for _mode in ("light", "dark"):
-            for _k in ("primaryColor", "backgroundColor",
-                       "secondaryBackgroundColor", "textColor"):
-                try:
-                    st._config.set_option(f"theme.{_mode}.{_k}",
-                                          _APP_THEME[_k])
-                except Exception:
-                    pass
-    except Exception:
-        pass
-    else:
-        st.rerun()
 
 def _check_password() -> bool:
     try:

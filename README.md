@@ -81,19 +81,15 @@ produce by accident. See `CHANGELOG.md` (v4.2).
 
 ## Theme
 
-Dark only. `.streamlit/config.toml` pins the dark base and the instrument
-palette, and `app.py` has the matching palette for the panels and maps it
-draws itself; keep the two in step.
+Dark only. `.streamlit/config.toml` pins just the dark base and sets no
+colours, on purpose: Streamlit's own widgets (tags, radios, sliders, tab
+underlines, form buttons) keep Streamlit's default accents, which is how
+v4.6 looks on the deployment. The cyan and navy are the app's own panels,
+buttons and charts, drawn from the palette in `app.py`.
 
-`app.py` also applies the same theme itself at start-up (`_APP_THEME`,
-right after the page config). If the config file is missing, stale or not
-deployed, Streamlit would otherwise fall back to its own default theme:
-warm grey page, red-pink accents on tags, radios, sliders and tabs. The
-guard sets the theme options through Streamlit's `st._config` and reruns
-once, so the app looks right either way. It does nothing when the config
-is already correct, never reruns more than once per session, and does
-nothing if a Streamlit version lacks the setting. A test checks that
-`_APP_THEME` matches `config.toml`.
+Do not add `primaryColor` and friends to the config unless you want every
+native widget recoloured: v5.5 forced a cyan theme and everything went
+blue. A test keeps the config to the dark base only.
 
 ## Changing the app
 

@@ -23,8 +23,6 @@ QUICKSTART.md for where to find both.
 ```
 app.py                          the whole app — one Streamlit script
 requirements.txt                runtime dependencies
-requirements-dev.txt            + pytest, for running tests/
-tests/test_app.py               regression suite (pytest tests/)
 QUICKSTART.md                   how to use the app, for a new user
 SECURITY.md                     what the app stores, the password gate
 CHANGELOG.md                    notable changes by version
@@ -63,7 +61,12 @@ never stores it; see SECURITY.md for the full picture.
 - A **Buffered fixes** view exists for when buffering does get turned on
   somewhere — it reads the `cached` flag on each fix.
 - **Network coverage** and **GPS accuracy** are separate views reading
-  the cell/MCC-MNC and accuracy columns, when the dashboard sends them.
+  the cell/MCC-MNC, accuracy, HDOP and SNR columns, when the dashboard
+  sends them. HDOP is the fixes table's *Signal Quality* and SNR is
+  *Signal Strength*; the HDOP/SNR tab tests them against a Fix and a Geo
+  threshold you enter. A fix must pass both tests: HDOP above its limit
+  or SNR below its limit makes it invalid. The map shows valid/invalid in
+  green/red, or HDOP-only / SNR-only as a colour scale with breaches in red.
 
 ## Memory
 
@@ -74,20 +77,25 @@ repeated-value columns to pandas `category` dtype and measurements to
 values in those columns**: a categorical column raises a `TypeError` on
 `.fillna()` with a value outside its known categories, but only when a
 real gap exists in the data, which a tidy hand-written fixture won't
-produce by accident. See `tests/test_app.py` and `CHANGELOG.md` (v4.2).
+produce by accident. See `CHANGELOG.md` (v4.2).
 
-## Development
+## Theme
 
-```bash
-pip install -r requirements-dev.txt
-pytest tests/ -v
-```
+`.streamlit/config.toml` has `[theme.light]` and `[theme.dark]` sections, so
+Streamlit's own widgets and table grids follow the browser's light/dark
+setting. `app.py` has a matching palette for the panels and maps it draws
+itself. Keep the two in step, and do not pin `base` in the config:
+Streamlit would then ignore the browser while the app still followed it,
+which is how white cards once ended up on a dark page. Needs Streamlit
+1.52 or later.
 
-The suite uses Streamlit's own `AppTest` harness against the real
-`app.py` — no mocking of the app's internals, just synthetic fix data
-fed into session state. Run it before deploying any change; several past
-bugs (a pandas dtype mismatch, a Markdown-parsing edge case) only showed
-up on real data shapes that a quick manual click-through didn't hit.
+## Changing the app
+
+Several past bugs (a pandas dtype mismatch, a Markdown-parsing edge case)
+only showed up on real data shapes that a quick click-through didn't hit.
+Before deploying a change, load a real pull and visit every view, and
+make sure the data you test with has genuine gaps in it (missing cell IDs,
+networks, HDOP/SNR) — see CHANGELOG.md for what went wrong and why.
 
 ## Notes & etiquette
 

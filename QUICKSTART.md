@@ -19,6 +19,9 @@ themselves.
 
 ---
 
+The app follows your browser's light or dark setting — there is no switch
+inside it.
+
 ## 1. Connect
 
 The first screen is a landing page asking for the same two things every
@@ -49,7 +52,7 @@ Choose the dates and press **Fetch rounds & fixes**.
 - Once fetching finishes, the page transitions: the landing form tucks
   itself into the sidebar on the left — still holding what you typed — and
   the main area fills with the dashboard. Everything in the sidebar
-  (dates, appearance, SIM upload) stays editable from there for the rest
+  (dates, SIM upload) stays editable from there for the rest
   of the session.
 
 ## 3. Choose a view
@@ -107,6 +110,61 @@ The Excel workbook alongside it keeps the detailed numbers for internal
 use.
 
 ---
+
+## HDOP and SNR (GPS accuracy)
+
+Open **GPS accuracy** — it starts on the **HDOP/SNR** tab (the metres view
+is the **Accuracy** tab beside it).
+
+- **HDOP** is the *Signal Quality* column on the replay fixes — lower is
+  better. **SNR** is *Signal Strength* — higher is better.
+- There are two sets of limits: a **Fix threshold** and a **Geo
+  threshold**. Each has an HDOP box (*invalid above*) and an SNR box
+  (*invalid below*). They start at Fix HDOP 1.2 / SNR 18 and Geo HDOP 0.8 / SNR 21 —
+  change them if your devices are configured differently. They are remembered
+  while you move between views.
+- A fix is **invalid** when its HDOP is above the limit **or** its SNR is
+  below it. A value sitting exactly on the limit passes. A fix that
+  carried neither reading is left out rather than counted as good or bad.
+- **A fix must pass both tests to be valid** — if either one fails, it is
+  invalid.
+- The map has three modes under **Show**:
+  - **Valid / invalid** — green where fixes pass both tests, red where
+    they fail. A grid square turns red once the share of failing fixes in
+    it reaches the **Flag a square at** setting (25% to start; lower it to
+    catch small pockets, raise it to see only places that are bad
+    throughout).
+  - **HDOP only** and **SNR only** — each reading coloured by quality,
+    green for the best through yellow to orange for the poorest that still
+    passes. Anything **over the limit is red, larger and ringed**, so a
+    breach never depends on telling two shades apart. The key under the
+    map gives the actual values at each end of the colour scale and the
+    share of fixes over the limit.
+  - **Against** picks whether the Fix or the Geo limits are used.
+  - Use the layer box on the map to show the red layer on its own.
+- Below the map, **Hole**, **Tag**, **Zone** and **Distribution** work like
+  the delay diagnostics tabs; **Distribution** shows where the readings sit
+  against both limits, which helps when choosing them.
+- Readings are rounded to 1 decimal before they are compared, because the
+  dashboard sends values like 0.6000000238418579 for 0.6 — without that, a
+  limit of 0.6 would fail a reading of 0.6. Enter limits to 1 decimal.
+
+What the pattern tells you: mostly SNR failures point at sky view or an
+antenna; mostly HDOP failures point at satellite geometry (trees,
+buildings, a steep hole); one tag far worse than the rest is that unit.
+
+## Cell IDs: hex and decimal
+
+The dashboard reports Cell ID and LAC in **hexadecimal** (`0448B810`,
+`6FD5`). Tower databases such as OpenCelliD use **decimal**. The Cell
+inventory and Handover log show both side by side (*Cell ID (hex)* and
+*Cell ID (decimal)*, likewise for LAC), and map popups give both. The
+*Hex / decimal converter* on the Cell inventory tab converts any value
+either way.
+
+When you add a tower list, cells are matched in decimal, so the
+dashboard's hex IDs are converted first. A tower list whose IDs contain
+letters is treated as hex.
 
 ## Reading the results
 

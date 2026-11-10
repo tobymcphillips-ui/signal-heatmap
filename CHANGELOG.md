@@ -10,6 +10,130 @@ Buffered fixes views, the drill-down and "where to look" suggestion
 tabs, and client export; v4.0 introduced the landing-page-into-sidebar
 flow. From here on, changes are logged properly.
 
+## v5.0
+
+**Fixed**
+- Light and dark mode. The theme in `config.toml` was pinned dark while
+  the app's own panels followed the browser, so a browser set to light
+  showed white cards on a dark page, a white-on-white title, and
+  unreadable values. The config now has `[theme.light]` and `[theme.dark]`
+  sections so Streamlit follows the browser too, and dark mode keeps the
+  exact v4.6 colours. A test checks the app palette and the config agree.
+- In light mode the hero title was hard-coded white and the primary
+  button text was hard-coded near-black on a dark accent; both now follow
+  the theme.
+
+**Added**
+- Cell ID and LAC are shown in hex (as the dashboard sends them) and
+  decimal side by side in the Cell inventory and Handover log, and in
+  map popups.
+- A Hex / decimal converter on the Cell inventory tab (either direction,
+  accepts a `0x` prefix).
+
+**Changed**
+- Tower lists are now matched in decimal, so the dashboard's hex cell IDs
+  match an OpenCelliD export (previously they could not).
+- Removed the Appearance (Auto / Dark / Light) selector: it restyled the
+  app's panels but not Streamlit's table grids, so forcing the opposite
+  theme to the browser's mixed light and dark. Follow the browser
+  setting instead.
+
+**Requires**
+- Streamlit 1.52 or later.
+
+## v4.9
+
+**Changed**
+- Back to the v4.6 look. The v4.7 restyle (IBM Carbon theme) is withdrawn:
+  the stylesheet, `config.toml` and `requirements.txt` are identical to
+  v4.6 again, including the Appearance selector.
+
+**Fixed** (carried over from v4.8)
+- Network coverage said "0 a network" even though every fix had a cell
+  ID. The replay page sends MCC/MNC zero-padded to four digits each
+  (`0214/0007`); the parser only accepted a 3-digit MCC. It now reads
+  `0214/0007`, `214/07`, `214-07`, `21407` and the split-column form
+  alike, and treats `0/0` or anything outside the 200-999 MCC range as
+  not reported rather than as a network.
+
+**Added**
+- Operators for Spain (Movistar, Vodafone, Orange, Yoigo) and the main
+  markets in France, Germany, Italy, Portugal, the Netherlands, Belgium,
+  Switzerland and Austria. Any code not in the table still shows as
+  "Unknown network (xxx-yy)" with the code.
+
+## v4.6
+
+**Changed**
+- Default thresholds are now **Fix**: HDOP 1.2, SNR 18 and **Geo**: HDOP
+  0.8, SNR 21 (they were placeholders). Still editable, and still
+  remembered while you move between views.
+
+## v4.5
+
+**Changed**
+- HDOP and SNR readings are rounded to **1 decimal place** (v4.4 used 4).
+  That is all the precision the limits need, and it still removes the
+  float32 noise in what the dashboard sends. The HDOP limit boxes go back
+  to 0.1 steps with one decimal, and the map key and popups show one
+  decimal. A side effect: HDOP readings that sit close together (0.52 and
+  0.63, say) collapse to 0.5 and 0.6, so the HDOP colour scale steps
+  rather than blends when the readings span a narrow range.
+
+## v4.4
+
+**Added**
+- HDOP/SNR map modes. **Show** now offers *Valid / invalid* (green where a
+  fix passes both tests, red where it fails — a fix must pass both),
+  *HDOP only* and *SNR only*. The single-metric modes colour each reading
+  from green (best) through yellow to orange (poorest that still passes),
+  and draw anything over its limit red, larger and ringed, in its own
+  "Over limit" layer. A key under the map shows the values at each end of
+  the scale and the share over the limit. **Against** chooses the Fix or
+  Geo limits.
+- *Flag a square at (% failing)* — a grid square is drawn red once that
+  share of its fixes fail.
+
+**Fixed**
+- Readings are now rounded to 4 decimals when read. The dashboard sends
+  float32 values widened to doubles (0.6 arrives as 0.6000000238418579),
+  which made a reading of 0.6 fail a limit of 0.6. (v4.3 stored them at
+  full precision and would have had this problem.)
+- HDOP limit boxes step in 0.05 and show two decimals, since real HDOP
+  values are often below 1.
+
+**Changed**
+- Valid is now green and Invalid red (v4.3 used cyan and magenta).
+
+## v4.3
+
+**Added**
+- **HDOP/SNR** sub-tab under GPS accuracy, and it is the one that opens
+  first (the existing metres view is now the **Accuracy** sub-tab). It
+  reads the replay fixes' Signal Quality (HDOP) and Signal Strength (SNR)
+  as numbers — `-` means absent — and tests them against two sets of
+  limits you enter: a **Fix threshold** and a **Geo threshold**, each with
+  an HDOP limit (invalid above) and an SNR limit (invalid below). The
+  comparisons are strict, so a value exactly on a limit passes, and a
+  fix with neither reading is left out rather than counted either way.
+- A map of where the invalid fixes are (aggregate grid, selected tags, or
+  a single round's route), switchable between the two threshold sets, with
+  a layer key to show Invalid on its own.
+- Hole, Tag, Zone and Distribution analytics for the same, in the style of
+  the delay diagnostics page: invalid % per hole in playing order, per tag
+  with a flag on tags failing far more than the fleet, worst zones, and
+  HDOP/SNR histograms with both thresholds drawn on them. Fail-reason
+  columns show whether HDOP or SNR is doing the failing.
+- Threshold boxes keep their values when you move to another view and back.
+
+**Changed**
+- HDOP and SNR are stored as full-precision numbers (not the float32 used
+  for delays): the tests are strict, and float32 would push a reading
+  sitting exactly on a limit over it.
+- Saved datasets are now versioned, so one saved before HDOP/SNR existed
+  is refetched (quickly, from the per-round cache) instead of being
+  restored without those columns.
+
 ## v4.2
 
 **Fixed**

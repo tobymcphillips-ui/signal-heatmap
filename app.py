@@ -16,7 +16,7 @@ import folium
 from folium.plugins import HeatMap
 import streamlit.components.v1 as components
 
-APP_VERSION = "v4.8"
+APP_VERSION = "v5.0"
 
 _HAS_DATA = st.session_state.get("df") is not None
 
@@ -58,186 +58,348 @@ def _browser_theme() -> str:
             return str(val).lower()
     except Exception:
         pass
-    return "light"
+    return "dark"
 
 
 THEME = _browser_theme()
 LIGHT = THEME == "light"
 
 if LIGHT:
-    C_BG = "#FFFFFF"
+    C_BG = "#F7F9FB"
     C_SURFACE = "#FFFFFF"
-    C_SURFACE2 = "#F4F4F4"
-    C_LINE = "#E0E0E0"
-    C_TEXT = "#161616"
-    C_MUTED = "#525252"
-    C_SUBTLE = "#8C8C8C"
-    C_ACCENT = "#0F62FE"
-    C_BTN, C_BTN_HOVER, C_BTN_PRESSED = "#0F62FE", "#0050E6", "#002D9C"
-    C_TAG = "#E0E0E0"
-    C_FOOT_BG, C_FOOT_TEXT = "#161616", "#C6C6C6"
+    C_LINE = "#D8E0E8"
+    C_TEXT = "#101A22"
+    C_MUTED = "#5A6B7A"
+    C_ACCENT = "#0B6E8F"
     C_CASING = "#FFFFFF"
     TILE_FILTER = "brightness(1.02) saturate(0.85)"
-    C_OK, C_GOOD, C_WARN = "#007D79", "#24A148", "#F1C21B"
-    C_HIGH, C_BAD, C_EXTREME = "#FF832B", "#DA1E28", "#8A3FFC"
 else:
-    C_BG = "#161616"
-    C_SURFACE = "#161616"
-    C_SURFACE2 = "#262626"
-    C_LINE = "#393939"
-    C_TEXT = "#F4F4F4"
-    C_MUTED = "#C6C6C6"
-    C_SUBTLE = "#8D8D8D"
-    C_ACCENT = "#4589FF"
-    C_BTN, C_BTN_HOVER, C_BTN_PRESSED = "#0F62FE", "#0353E9", "#002D9C"
-    C_TAG = "#393939"
-    C_FOOT_BG, C_FOOT_TEXT = "#262626", "#C6C6C6"
-    C_CASING = "#161616"
+    C_BG = "#0B1016"
+    C_SURFACE = "#121A22"
+    C_LINE = "#22303D"
+    C_TEXT = "#DCE6EE"
+    C_MUTED = "#7C8B99"
+    C_ACCENT = "#4CC9F0"
+    C_CASING = "#08131B"
     TILE_FILTER = "brightness(0.45) saturate(0.55)"
-    C_OK, C_GOOD, C_WARN = "#08BDBA", "#42BE65", "#F1C21B"
-    C_HIGH, C_BAD, C_EXTREME = "#FF832B", "#FA4D56", "#BE95FF"
 
+if LIGHT:
+    C_OK = "#0F766E"
+    C_GOOD = "#15803D"
+    C_WARN = "#B45309"
+    C_HIGH = "#C2410C"
+    C_BAD = "#BE123C"
+    C_EXTREME = "#7E22CE"
+else:
+    C_OK = "#2DD4BF"
+    C_GOOD = "#34D399"
+    C_WARN = "#FBBF24"
+    C_HIGH = "#FB923C"
+    C_BAD = "#FB7185"
+    C_EXTREME = "#C084FC"
+
+C_ON_ACCENT = "#FFFFFF" if LIGHT else "#06131A"
 TM_GREEN, TM_YELLOW, TM_ORANGE, TM_RED = C_GOOD, C_WARN, C_HIGH, C_BAD
 TM_GRAY = C_MUTED
 
+T_LIFT = "rgba(0,0,0,0.03)" if LIGHT else "rgba(255,255,255,0.03)"
+T_LIFT2 = "rgba(0,0,0,0.05)" if LIGHT else "rgba(255,255,255,0.05)"
+T_EDGE = "rgba(0,0,0,0.10)" if LIGHT else "rgba(255,255,255,0.10)"
+T_EDGE_SOFT = "rgba(0,0,0,0.07)" if LIGHT else "rgba(255,255,255,0.07)"
+
 st.markdown(f"""
 <style>
-html, body, .stApp, button, input, textarea, select {{
-    font-family: 'IBM Plex Sans', 'Helvetica Neue', Arial, sans-serif;
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+html, body, [class*="css"], p, li, label, .stMarkdown {{
+    font-family: 'IBM Plex Sans', system-ui, sans-serif;
 }}
-.stApp {{ letter-spacing: 0.16px; }}
-h1, h2, h3, h4, h5, h6 {{ letter-spacing: 0 !important; color: {C_TEXT}; }}
-[data-testid="stMetricValue"], [data-testid="stDataFrame"] {{ font-variant-numeric: tabular-nums; }}
+
+
+[data-testid="stMetricValue"], [data-testid="stDataFrame"],
+code, .stCodeBlock {{
+    font-family: 'IBM Plex Mono', ui-monospace, monospace;
+    font-variant-numeric: tabular-nums;
+}}
+
+h1, h2, h3, h4, h5 {{
+    font-family: 'IBM Plex Sans', system-ui, sans-serif;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: {C_TEXT};
+}}
+
 
 [data-testid="stHeader"] {{
-    background: {C_BG} !important;
-    border-bottom: 1px solid {C_LINE};
-    height: 48px !important;
+    background: transparent !important;
+    height: 3rem !important;
 }}
-[data-testid="stMainBlockContainer"] {{
-    padding: 4.5rem 2rem 4rem 2rem !important;
-    max-width: none !important;
-    animation: sd-fade-in 0.25s ease-out;
-}}
-@keyframes sd-fade-in {{ from {{ opacity: 0; }} to {{ opacity: 1; }} }}
+.block-container {{ padding-top: 1.2rem; padding-bottom: 3rem; }}
 
-[data-testid="stMainBlockContainer"]::after {{
-    content: "Tagmarshal  ·  Signal diagnostics  {APP_VERSION}";
-    display: block;
-    margin: 64px -2rem -4rem -2rem;
-    padding: 32px;
-    background: {C_FOOT_BG};
-    color: {C_FOOT_TEXT};
-    font-size: 14px;
+
+@keyframes sd-fade-in {{
+    from {{ opacity: 0; transform: translateY(4px); }}
+    to   {{ opacity: 1; transform: translateY(0); }}
+}}
+.main .block-container {{ animation: sd-fade-in 0.35s ease-out; }}
+[data-testid="stSidebar"] {{ transition: width 0.3s ease, min-width 0.3s ease; }}
+
+[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {{
+    padding-top: 0.5rem;
+}}
+[data-testid="stSidebarHeader"],
+[data-testid="stSidebarCollapseButton"] {{
+    padding-top: 6px;
 }}
 
-[data-testid="stSidebar"] {{ border-right: 1px solid {C_LINE}; transition: width 0.3s ease, min-width 0.3s ease; }}
-[data-testid="stSidebarHeader"] {{ padding-top: 6px; }}
-[data-testid="stSidebarUserContent"] {{ padding-top: 0.5rem; }}
-[data-testid="stSidebar"] h3 {{ padding-top: 8px; }}
 
 .sd-head {{
+    border: 1px solid {C_LINE};
+    border-radius: 10px;
+    background:
+      linear-gradient(180deg, rgba(76,201,240,0.05) 0%, transparent 60%),
+      {C_SURFACE};
+    padding: 18px 22px 16px 22px;
+    margin-bottom: 18px;
+    position: relative;
+    overflow: hidden;
+}}
+
+.sd-head-row {{
+    display: flex; align-items: flex-start; justify-content: space-between;
+    gap: 28px; flex-wrap: wrap;
+}}
+.sd-ver {{
+    color: {C_MUTED};
+    letter-spacing: 0.08em;
+    margin-left: 6px;
+}}
+.sd-eyebrow {{
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: {C_ACCENT};
+    margin-bottom: 6px;
+}}
+.sd-head h1 {{
+    font-size: 27px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    margin: 0;
+    color: {C_TEXT};
+}}
+
+.sd-info-card {{
+    border: 1px solid {C_LINE};
+    border-radius: 10px;
+    background: {C_SURFACE};
+    padding: 18px 22px 20px 22px;
+    height: 100%;
+}}
+.sd-info-card p {{
+    color: {C_MUTED};
+    font-size: 14px;
+    line-height: 1.55;
+    margin: 8px 0 12px 0;
+}}
+.sd-info-card ul {{
+    margin: 0 0 14px 0;
+    padding-left: 18px;
+    color: {C_TEXT};
+    font-size: 13.5px;
+    line-height: 1.9;
+}}
+.sd-info-card .sd-info-nudge {{
+    color: {C_ACCENT};
+    font-size: 13px;
+    margin: 10px 0 0 0;
+    border-top: 1px solid {C_LINE};
+    padding-top: 12px;
+}}
+.sd-head p {{
+    color: {C_MUTED};
+    margin: 7px 0 0 0;
+    font-size: 14px;
+    max-width: 780px;
+    line-height: 1.5;
+}}
+
+
+[data-testid="stMetric"] {{
     background: {C_SURFACE};
     border: 1px solid {C_LINE};
-    padding: 24px 32px;
-    margin-bottom: 24px;
+    border-radius: 10px;
+    padding: 14px 16px 12px 16px;
+    min-height: 104px;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
 }}
-.sd-head--hero {{ padding: 48px; }}
-.sd-head-row {{ display: flex; align-items: flex-start; justify-content: space-between; gap: 28px; flex-wrap: wrap; }}
-.sd-eyebrow {{ font-size: 14px; line-height: 1.29; letter-spacing: 0.16px; color: {C_MUTED}; margin-bottom: 8px; }}
-.sd-ver {{ color: {C_SUBTLE}; margin-left: 8px; }}
-.sd-head h1 {{ font-size: 32px !important; font-weight: 300 !important; line-height: 1.25; margin: 0; padding: 0; color: {C_TEXT}; }}
-.sd-head--hero h1 {{ font-size: 42px !important; line-height: 1.2; }}
-.sd-head p {{ color: {C_MUTED}; margin: 12px 0 0 0; font-size: 16px; line-height: 1.5; max-width: 760px; }}
-
-.sd-info-card {{ background: {C_SURFACE}; border: 1px solid {C_LINE}; padding: 24px; height: 100%; }}
-.sd-info-card p {{ color: {C_MUTED}; font-size: 14px; line-height: 1.5; margin: 8px 0 16px 0; }}
-.sd-info-card ul {{ margin: 0 0 16px 0; padding-left: 18px; color: {C_TEXT}; font-size: 14px; line-height: 1.9; }}
-.sd-info-card .sd-info-nudge {{ color: {C_ACCENT}; font-size: 14px; margin: 8px 0 0 0; border-top: 1px solid {C_LINE}; padding-top: 16px; }}
-
-[data-testid="stMetric"] {{ background: {C_SURFACE}; border: 1px solid {C_LINE}; padding: 16px; min-height: 104px; }}
-[data-testid="stMetricLabel"] p {{ font-size: 12px !important; letter-spacing: 0.32px; color: {C_MUTED} !important; }}
-[data-testid="stMetricValue"] {{ font-weight: 300 !important; }}
-
-[data-testid="stTabs"] [role="tablist"] {{ gap: 0; border-bottom: 1px solid {C_LINE}; }}
-[data-testid="stTab"] {{ padding: 12px 16px; }}
-[data-testid="stTab"] p {{ font-size: 14px !important; letter-spacing: 0.16px; color: {C_MUTED} !important; }}
-[data-testid="stTab"][aria-selected="true"] p {{ color: {C_TEXT} !important; font-weight: 600 !important; }}
-
-[data-testid="stRadioGroup"][aria-label="View"],
-[data-testid="stRadioGroup"][aria-label="Measure"],
-[data-testid="stRadioGroup"][aria-label="GPS view"] {{
-    display: inline-flex !important; gap: 0 !important;
-    border: 1px solid {C_LINE}; background: {C_SURFACE2};
+[data-testid="stMetricLabel"] {{
+    color: {C_MUTED} !important;
+    font-size: 11px !important;
+    font-weight: 500;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    white-space: normal;
+    line-height: 1.35;
+    min-height: 30px;
 }}
-[data-testid="stRadioGroup"][aria-label="View"] [data-testid="stRadioOption"],
-[data-testid="stRadioGroup"][aria-label="Measure"] [data-testid="stRadioOption"],
-[data-testid="stRadioGroup"][aria-label="GPS view"] [data-testid="stRadioOption"] {{
-    margin: 0 !important; padding: 10px 20px; cursor: pointer;
-    border-right: 1px solid {C_LINE};
+[data-testid="stMetricValue"] {{
+    font-size: 31px;
+    font-weight: 500;
+    line-height: 1.15;
+    color: {C_TEXT};
 }}
-[data-testid="stRadioGroup"][aria-label="View"] [data-testid="stRadioOption"] > div > div:first-child,
-[data-testid="stRadioGroup"][aria-label="Measure"] [data-testid="stRadioOption"] > div > div:first-child,
-[data-testid="stRadioGroup"][aria-label="GPS view"] [data-testid="stRadioOption"] > div > div:first-child {{ display: none; }}
-[data-testid="stRadioGroup"][aria-label="View"] [data-testid="stRadioOption"][data-selected="true"],
-[data-testid="stRadioGroup"][aria-label="Measure"] [data-testid="stRadioOption"][data-selected="true"],
-[data-testid="stRadioGroup"][aria-label="GPS view"] [data-testid="stRadioOption"][data-selected="true"] {{ background: {C_TEXT}; }}
-[data-testid="stRadioGroup"][aria-label="View"] [data-testid="stRadioOption"][data-selected="true"] p,
-[data-testid="stRadioGroup"][aria-label="Measure"] [data-testid="stRadioOption"][data-selected="true"] p,
-[data-testid="stRadioGroup"][aria-label="GPS view"] [data-testid="stRadioOption"][data-selected="true"] p {{ color: {C_BG} !important; }}
 
-[data-testid="stBaseButton-primary"], [data-testid="stBaseButton-secondary"] {{
-    border-radius: 0 !important; padding: 10px 16px; min-height: 0;
+
+[data-testid="stTabs"] [data-baseweb="tab-list"] {{
+    gap: 0;
+    border-bottom: 1px solid {C_LINE};
 }}
-[data-testid="stBaseButton-primary"] p, [data-testid="stBaseButton-secondary"] p {{
-    color: inherit !important; font-size: 14px !important; font-weight: 400; letter-spacing: 0.16px;
+[data-testid="stTabs"] [data-baseweb="tab"] {{
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    padding: 9px 15px;
+    color: {C_MUTED};
 }}
-button[data-testid="stBaseButton-primary"] {{ background: {C_BTN} !important; color: #FFFFFF !important; border: 1px solid {C_BTN} !important; }}
-button[data-testid="stBaseButton-primary"]:hover {{ background: {C_BTN_HOVER} !important; border-color: {C_BTN_HOVER} !important; }}
-button[data-testid="stBaseButton-primary"]:active {{ background: {C_BTN_PRESSED} !important; border-color: {C_BTN_PRESSED} !important; }}
-button[data-testid="stBaseButton-secondary"] {{ background: transparent !important; color: {C_ACCENT} !important; border: 1px solid {C_ACCENT} !important; }}
-button[data-testid="stBaseButton-secondary"]:hover {{ background: {C_BTN} !important; color: #FFFFFF !important; border-color: {C_BTN} !important; }}
-button[data-testid="stBaseButton-primary"]:focus-visible, button[data-testid="stBaseButton-secondary"]:focus-visible {{ outline: 2px solid {C_ACCENT}; outline-offset: 2px; }}
-
-[data-testid="stWidgetLabel"] p {{ font-size: 12px !important; letter-spacing: 0.32px; color: {C_MUTED} !important; }}
-[data-testid="stTextInputRootElement"], [data-testid="stNumberInputContainer"], [data-testid="stDateInputField"] {{
-    border-bottom: 1px solid {C_SUBTLE} !important;
+[data-testid="stTabs"] [aria-selected="true"] {{ color: {C_ACCENT}; }}
+[data-testid="stTabs"] [data-baseweb="tab-highlight"] {{
+    background-color: {C_ACCENT};
+    height: 2px;
 }}
-[data-testid="stTextInputRootElement"]:focus-within, [data-testid="stNumberInputContainer"]:focus-within, [data-testid="stDateInputField"]:focus-within {{
-    outline: 2px solid {C_ACCENT}; outline-offset: -2px; border-bottom-color: transparent !important;
+
+
+[data-testid="stExpander"] details,
+[data-testid="stForm"] {{
+    border: 1px solid {C_LINE};
+    border-radius: 10px;
+    background: {C_SURFACE};
 }}
-[data-testid="stMultiSelectTagsContainer"] [data-tag] {{
-    background: {C_TAG} !important; color: {C_TEXT} !important; border-radius: 2px !important;
+[data-testid="stExpander"] summary {{
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: {C_TEXT};
 }}
-[data-testid="stMultiSelectTagsContainer"] [data-tag] span {{ color: {C_TEXT} !important; }}
 
-[data-testid="stExpander"] details {{ border: 1px solid {C_LINE}; background: {C_SURFACE}; }}
-[data-testid="stExpander"] summary p {{ font-size: 14px !important; letter-spacing: 0.16px; }}
-[data-testid="stExpander"] {{ margin-bottom: 8px; }}
 
-[data-testid="stAlertContainer"] {{ border-radius: 0 !important; border-left: 3px solid {C_ACCENT}; }}
-[data-testid="stAlertContainer"]:has([data-testid="stAlertContentSuccess"]) {{ border-left-color: #24A148; }}
-[data-testid="stAlertContainer"]:has([data-testid="stAlertContentWarning"]) {{ border-left-color: #F1C21B; }}
-[data-testid="stAlertContainer"]:has([data-testid="stAlertContentError"]) {{ border-left-color: #DA1E28; }}
+.stButton button[kind="primary"], .stDownloadButton button {{
+    background: {C_ACCENT} !important;
+    color: {C_ON_ACCENT} !important;
+    border: none !important;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+}}
+.stButton button[kind="primary"]:hover, .stDownloadButton button:hover {{
+    background: #7BD9F5 !important;
+}}
+.stButton button[kind="secondary"] {{
+    background: transparent !important;
+    border: 1px solid {C_LINE} !important;
+    color: {C_TEXT} !important;
+}}
 
-[data-testid="stCaptionContainer"] {{ opacity: 1 !important; }}
-[role="dialog"] h2 {{ font-size: 24px !important; font-weight: 400 !important; }}
-[role="dialog"] h4 {{ font-size: 20px !important; font-weight: 400 !important; margin-top: 8px; }}
-[data-testid="stCaptionContainer"] p {{ font-size: 12px !important; letter-spacing: 0.32px; line-height: 1.33; color: {C_MUTED} !important; }}
-hr, [data-testid="stDivider"] hr {{ border-color: {C_LINE} !important; margin: 1.5rem 0 !important; }}
-[data-testid="stDataFrame"] {{ border: 1px solid {C_LINE}; font-size: 14px; }}
-iframe {{ border-radius: 0; }}
 
-#MainMenu, footer, [data-testid="stStatusWidget"], .stAppDeployButton,
+[data-testid="stHorizontalBlock"] [role="radiogroup"],
+div[data-testid="stRadio"] [role="radiogroup"] {{
+    gap: 4px;
+}}
+
+.main [data-testid="stRadio"]:has([aria-label="View"]) [role="radiogroup"],
+.main [data-testid="stRadio"]:has([aria-label="Measure"]) [role="radiogroup"] {{
+    background: {T_LIFT2};
+    border: 1px solid {C_LINE};
+    border-radius: 10px;
+    padding: 4px;
+    display: inline-flex;
+}}
+
+
+[data-testid="stCaptionContainer"] p {{
+    font-size: 12.5px !important;
+    line-height: 1.45;
+    color: {C_MUTED} !important;
+}}
+
+
+[data-testid="stMetric"] {{
+    background: {T_LIFT};
+    border: 1px solid {T_EDGE_SOFT};
+    border-radius: 12px;
+    padding: 14px 16px 12px 16px;
+    min-height: 104px;
+}}
+[data-testid="stMetricLabel"] {{
+    font-size: 10.5px !important;
+    letter-spacing: 0.1em;
+    line-height: 1.35;
+    min-height: 28px;
+}}
+[data-testid="stMetricValue"] {{ font-size: 28px; }}
+
+
+[data-testid="stVerticalBlock"] > div:has(> [data-testid="stMarkdown"])
+  + div [data-testid="stDataFrame"] {{ margin-top: 2px; }}
+[data-testid="stExpander"] {{ margin-bottom: 6px; }}
+
+
+[data-testid="stSidebar"] {{ border-right: 1px solid {C_LINE}; }}
+[data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2,
+[data-testid="stSidebar"] h3 {{
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px !important;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: {C_ACCENT};
+}}
+
+hr, [data-testid="stDivider"] hr {{
+    border-color: {C_LINE} !important;
+    margin: 1.1rem 0 !important;
+}}
+
+[data-testid="stDataFrame"] {{
+    border: 1px solid {C_LINE};
+    border-radius: 10px;
+    overflow: hidden;
+    font-size: 13px;
+}}
+iframe {{ border-radius: 10px; }}
+
+
+#MainMenu, footer,
+[data-testid="stStatusWidget"], .stAppDeployButton,
 [data-testid="stAppDeployButton"], [data-testid="manage-app-button"],
-a[href*="streamlit.io/cloud"], [class*="viewerBadge"] {{ visibility: hidden !important; display: none !important; }}
-[data-testid="stSidebarCollapsedControl"], [data-testid="collapsedControl"],
-[data-testid="stSidebarCollapseButton"], [data-testid="stExpandSidebarButton"] {{
-    visibility: visible !important; display: flex !important; z-index: 999999 !important;
+a[href*="streamlit.io/cloud"], [class*="viewerBadge"] {{
+    visibility: hidden !important;
+    display: none !important;
 }}
-[data-testid="stSidebarCollapsedControl"], [data-testid="collapsedControl"] {{
-    position: fixed !important; top: 6px !important; left: 8px !important;
-    background: {C_SURFACE}; border: 1px solid {C_LINE}; border-radius: 0; padding: 2px;
+[data-testid="stSidebarCollapsedControl"],
+[data-testid="collapsedControl"],
+[data-testid="stSidebarCollapseButton"],
+[data-testid="stExpandSidebarButton"] {{
+    visibility: visible !important;
+    display: flex !important;
+    z-index: 999999 !important;
+}}
+
+[data-testid="stSidebarCollapsedControl"],
+[data-testid="collapsedControl"] {{
+    position: fixed !important;
+    top: 14px !important;
+    left: 14px !important;
+    background: {C_SURFACE};
+    border: 1px solid {C_LINE};
+    border-radius: 8px;
+    padding: 2px;
 }}
 </style>
 """, unsafe_allow_html=True)
@@ -247,7 +409,7 @@ _hero_p = ("<p>Reads every round's fixes for a date range, measures the "
            "time the server received it, and maps where on the course "
            "that delay grows.</p>") if _HAS_DATA else ""
 st.html(f"""
-<div class="sd-head{' sd-head--hero' if not _HAS_DATA else ''}">
+<div class="sd-head">
   <div class="sd-head-row">
     <div>
       <div class="sd-eyebrow">Signal diagnostics <span class="sd-ver">{APP_VERSION}</span></div>
@@ -313,7 +475,7 @@ _landing = st.session_state.get("df") is None
 if _landing:
     _target, _info_col = st.columns([1, 1.15], gap="large")
     with _target:
-        st.markdown("## Connect to a course")
+        st.markdown("#### Connect to a course")
         st.caption("Fill this in once — it moves into the sidebar once "
                    "you've fetched, ready to adjust the dates whenever "
                    "you like.")
@@ -344,7 +506,7 @@ with _target:
         st.session_state["tour_step"] = 0
         st.rerun()
 
-    st.subheader("Connection")
+    st.header("Connection")
     base_url = st.text_input(
         "API base URL (region host + course slug)",
         value=st.session_state.get("_base", ""),
@@ -369,7 +531,7 @@ with _target:
         ),
     )
 
-    st.subheader("Date range")
+    st.header("Date range")
     today = date.today()
     start_d = st.date_input("Start date", value=today, key="start_date_input")
     end_d = st.date_input("End date", value=today, key="end_date_input")
@@ -412,7 +574,7 @@ with _target:
                     st.error(f"Couldn't clear: {e}")
 
     if not _landing:
-        st.subheader("SIM data")
+        st.header("SIM data")
         st.caption(
             "Optional. Upload a SIM export to filter and compare by provider. "
             "Add one file per server — they merge on IMEI."
@@ -785,9 +947,6 @@ _add(232, "05", "Drei")
 
 
 def _mcc_mnc(mcc, mnc):
-    """Normalise to ('214', '7'). The replay page pads both parts to four
-    digits ('0214/0007'); a real MCC is 3 digits (200-999). Zeros or
-    anything outside that range means 'not reported'."""
     try:
         m, n = int(str(mcc).strip()), int(str(mnc).strip())
     except (TypeError, ValueError):
@@ -864,6 +1023,14 @@ LABELS.update({
 })
 
 
+LABELS.update({
+    "cell_id": "Cell ID (hex)", "cell_dec": "Cell ID (decimal)",
+    "lac": "LAC (hex)", "lac_dec": "LAC (decimal)",
+    "from_cell": "From cell (hex)", "from_cell_dec": "From cell (decimal)",
+    "to_cell": "To cell (hex)", "to_cell_dec": "To cell (decimal)",
+})
+
+
 def col_label(col: str) -> str:
     n = globals().get("NOUN", "delay").capitalize()
     ok = globals().get("OK_S", 5.0)
@@ -886,6 +1053,40 @@ def show_table(data, **kw):
         d.index.name = col_label(d.index.name)
     kw.setdefault("use_container_width", True)
     return st.dataframe(d, **kw)
+
+
+def hex_to_dec(v):
+    if v is None:
+        return None
+    s = str(v).strip()
+    if s and re.fullmatch(r"[0-9A-Fa-f]+", s):
+        return str(int(s, 16))
+    return None
+
+
+def to_dec_key(v):
+    s = str(v).strip()
+    if re.fullmatch(r"\d+", s):
+        return str(int(s))
+    if re.fullmatch(r"[0-9A-Fa-f]+", s):
+        return str(int(s, 16))
+    return None
+
+
+def cell_both(c):
+    d = hex_to_dec(c)
+    return str(c) if d is None else f"{c} (decimal {d})"
+
+
+def convert_id(text, kind):
+    s = str(text).strip().replace(" ", "").replace("_", "")
+    if s[:2].lower() == "0x":
+        s = s[2:]
+    try:
+        n = int(s, 16) if kind == "Hex" else int(s, 10)
+    except ValueError:
+        return None, None
+    return (f"{n:X}", str(n)) if n >= 0 else (None, None)
 
 
 def clean_digits(s):
@@ -1353,7 +1554,7 @@ def build_category_map(pts, mode, colour_by, bin_m, show_handovers,
                     weight=line_weight, opacity=1.0,
                     popup=folium.Popup(
                         f"<b>{val}</b><br>{holes[i0]}<br>"
-                        f"Cell {cells[i0]}<br>"
+                        f"Cell {cell_both(cells[i0])}<br>"
                         f"{times[i0]} → {times[i1]}<br>"
                         f"{i1 - i0 + 1} fixes",
                         max_width=260),
@@ -1372,7 +1573,7 @@ def build_category_map(pts, mode, colour_by, bin_m, show_handovers,
                             popup=folium.Popup(
                                 f"<b>Handover</b><br>"
                                 f"{labels[i - 1]} → {labels[i]}<br>"
-                                f"Cell {cells[i - 1]} → {cells[i]}<br>"
+                                f"Cell {cell_both(cells[i - 1])} → {cell_both(cells[i])}<br>"
                                 f"{times[i]}<br>{holes[i]}",
                                 max_width=280),
                         ).add_to(_fg)
@@ -1602,6 +1803,21 @@ def render_network_view(df):
             show_table(piv.sort_index(), use_container_width=True)
 
     with t2:
+        st.caption("Cell ID and LAC are shown as the dashboard reports them "
+                   "(hexadecimal) with the decimal equivalent beside them — "
+                   "tower databases such as OpenCelliD use decimal.")
+        with st.expander("Hex / decimal converter"):
+            cv1, cv2 = st.columns([2, 1])
+            cv_val = cv1.text_input("Value", key="conv_val",
+                                    placeholder="e.g. 0448B810 or 71874576")
+            cv_kind = cv2.radio("This is", ["Hex", "Decimal"],
+                                horizontal=True, key="conv_kind")
+            if cv_val.strip():
+                hx, dc = convert_id(cv_val, cv_kind)
+                if hx is None:
+                    st.warning(f"That isn't a valid {cv_kind.lower()} number.")
+                else:
+                    st.markdown(f"**Hex** `{hx}` · **Decimal** `{dc}`")
         cells = (sel.dropna(subset=["cell_id"])
                  .groupby(["cell_id", "network"])
                  .agg(fixes=("lat", "count"),
@@ -1617,6 +1833,9 @@ def render_network_view(df):
             sel.groupby("cell_id")["lat"].mean())
         cells["centroid_lon"] = cells["cell_id"].map(
             sel.groupby("cell_id")["lon"].mean())
+        cells["cell_dec"] = cells["cell_id"].astype("object").map(hex_to_dec)
+        if "lac" in cells.columns:
+            cells["lac_dec"] = cells["lac"].astype("object").map(hex_to_dec)
 
         towers = None
         with st.expander("Add tower locations"):
@@ -1624,7 +1843,9 @@ def render_network_view(df):
                 "The fixes tell you which cell served the device, not "
                 "where that cell is. Upload a tower list (an OpenCelliD "
                 "export works unchanged) and the towers are placed on the "
-                "map with a line to the fixes they served.")
+                "map with a line to the fixes they served. Cells are "
+                "matched in decimal, so the dashboard's hex IDs are "
+                "converted first.")
             tf = st.file_uploader("Tower CSV", type=["csv"],
                                   key="tower_csv",
                                   label_visibility="collapsed")
@@ -1649,7 +1870,7 @@ def render_network_view(df):
                                  f"Found: {list(traw.columns)[:8]}")
                     else:
                         towers = pd.DataFrame({
-                            "cell_id": clean_digits(traw[c_cell]),
+                            "cell_dec": traw[c_cell].map(to_dec_key),
                             "tower_lat": pd.to_numeric(traw[c_lat],
                                                        errors="coerce"),
                             "tower_lon": pd.to_numeric(traw[c_lon],
@@ -1661,18 +1882,17 @@ def render_network_view(df):
                             towers["range_m"] = pd.to_numeric(
                                 traw[c_rng], errors="coerce")
                         towers = (towers.dropna(
-                            subset=["tower_lat", "tower_lon"])
-                            .drop_duplicates("cell_id"))
+                            subset=["cell_dec", "tower_lat", "tower_lon"])
+                            .drop_duplicates("cell_dec"))
                         st.success(f"{len(towers):,} towers loaded.")
                 except Exception as e:
                     st.error(f"Couldn't read that CSV: {e}")
                     towers = None
 
         if towers is not None and not towers.empty:
-            cells["cell_id"] = cells["cell_id"].astype(str)
-            cells = cells.merge(towers[["cell_id", "tower_lat",
+            cells = cells.merge(towers[["cell_dec", "tower_lat",
                                         "tower_lon"]],
-                                on="cell_id", how="left")
+                                on="cell_dec", how="left")
             matched = int(cells["tower_lat"].notna().sum())
             st.caption(f"Located {matched} of {len(cells)} cells.")
             got = cells.dropna(subset=["tower_lat", "tower_lon"])
@@ -1706,7 +1926,7 @@ def render_network_view(df):
                         color=C_CASING, weight=2, fill=True,
                         fill_color="#FFE500", fill_opacity=1,
                         popup=folium.Popup(
-                            f"<b>Cell {r.cell_id}</b><br>{r.network}<br>"
+                            f"<b>Cell {cell_both(r.cell_id)}</b><br>{r.network}<br>"
                             f"{int(r.fixes)} fixes",
                             max_width=240)).add_to(tm)
                 folium.CircleMarker(
@@ -1720,6 +1940,9 @@ def render_network_view(df):
                            "cyan marker is the course. Distance is "
                            "straight-line to the fixes that cell served.")
 
+        front = [c for c in ("cell_id", "cell_dec", "network", "lac",
+                             "lac_dec") if c in cells.columns]
+        cells = cells[front + [c for c in cells.columns if c not in front]]
         show_table(cells.drop(columns=["centroid_lat", "centroid_lon"],
                               errors="ignore"),
                    use_container_width=True, hide_index=True)
@@ -1740,6 +1963,11 @@ def render_network_view(df):
                 prev_n, prev_c = r.network, r.cell_id
         if rows:
             log = pd.DataFrame(rows)
+            log["from_cell_dec"] = log["from_cell"].map(hex_to_dec)
+            log["to_cell_dec"] = log["to_cell"].map(hex_to_dec)
+            log = log[["round_id", "tag", "time", "location", "from", "to",
+                       "from_cell", "from_cell_dec", "to_cell",
+                       "to_cell_dec"]]
             show_table(log, use_container_width=True, hide_index=True)
             st.download_button("Download handover log CSV",
                                log.to_csv(index=False).encode(),
@@ -2355,7 +2583,7 @@ def _distribution_chart(series, title, lo, hi, fix_thr, geo_thr):
         strokeWidth=2.5, strokeDash=[6, 3]).encode(
         x="x:Q",
         color=alt.Color("set:N", title="Threshold", scale=alt.Scale(
-            domain=["Fix", "Geo"], range=[C_HIGH, C_BAD])),
+            domain=["Fix", "Geo"], range=[C_WARN, C_BAD])),
         tooltip=[alt.Tooltip("set:N", title="Threshold"),
                  alt.Tooltip("x:Q", title=title, format=".1f")])
     return (bars + rules).properties(height=260)

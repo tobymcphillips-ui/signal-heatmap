@@ -85,22 +85,15 @@ Dark only. `.streamlit/config.toml` pins the dark base and the instrument
 palette, and `app.py` has the matching palette for the panels and maps it
 draws itself; keep the two in step.
 
-## Course-only maps
-
-`course_mask` turns all the fixes into a small soft-edged image (an 8 m
-grid, or coarser for very large courses). Steps: bin fixes into cells
-(dropping stray fixes and cells seen once), thicken by the margin so gaps
-between fixes join up, close the remaining notches with a 100 m closing,
-fill every enclosed hole, smooth the outline (20 m blur, re-thresholded)
-and feather the edge (10 m blur). The result is a PNG whose alpha is the
-darkness outside the course.
-
-`CourseMask` places it as an image overlay between the satellite tiles
-and the markers, with a dark polygon covering everything outside the
-image, and gives the map container the same dark colour so tile seams do
-not show as pale lines. It is applied in every map builder through
-`mask_args()`. A thin dotted line of fixes would vanish under the blur, so
-the margin has a 30 m minimum.
+`app.py` also applies the same theme itself at start-up (`_APP_THEME`,
+right after the page config). If the config file is missing, stale or not
+deployed, Streamlit would otherwise fall back to its own default theme:
+warm grey page, red-pink accents on tags, radios, sliders and tabs. The
+guard sets the theme options through Streamlit's `st._config` and reruns
+once, so the app looks right either way. It does nothing when the config
+is already correct, never reruns more than once per session, and does
+nothing if a Streamlit version lacks the setting. A test checks that
+`_APP_THEME` matches `config.toml`.
 
 ## Changing the app
 

@@ -10,6 +10,26 @@ Buffered fixes views, the drill-down and "where to look" suggestion
 tabs, and client export; v4.0 introduced the landing-page-into-sidebar
 flow. From here on, changes are logged properly.
 
+## v5.5
+
+**Removed**
+- Course-only maps (v5.3 and v5.4): the mask, the *Map style* panel and
+  all the code behind it. Maps show the whole satellite image again.
+
+**Fixed**
+- Red accents instead of the blue theme. When `.streamlit/config.toml`
+  was not deployed with `app.py` (or was an old one), Streamlit fell back
+  to its default theme: warm grey page and sidebar, red-pink tags, radios,
+  sliders, tab underlines and form buttons, clashing with the app's own
+  cyan. The app now applies its theme itself at start-up when the config
+  is missing or different (one extra rerun, once). Checked in a real
+  browser with no config, a stale Carbon config and the correct config,
+  in both light and dark browsers.
+
+**Kept**
+- Maps give their container the page's dark colour, so the pale lines
+  that showed between satellite tiles are no longer light grey.
+
 ## v5.4
 
 **Changed**

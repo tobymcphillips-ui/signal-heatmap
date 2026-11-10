@@ -1,12 +1,9 @@
-import base64
 import hashlib
 import json
 import html as html_mod
 import math
 import re
-import struct
 import time
-import zlib
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -16,12 +13,10 @@ import requests
 import streamlit as st
 import altair as alt
 import folium
-from branca.element import MacroElement
 from folium.plugins import HeatMap
-from jinja2 import Template
 import streamlit.components.v1 as components
 
-APP_VERSION = "v5.4"
+APP_VERSION = "v5.5"
 
 _HAS_DATA = st.session_state.get("df") is not None
 
@@ -31,6 +26,42 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded" if _HAS_DATA else "collapsed",
 )
+
+_APP_THEME = {
+    "base": "dark",
+    "primaryColor": "#4CC9F0",
+    "backgroundColor": "#0B1016",
+    "secondaryBackgroundColor": "#121A22",
+    "textColor": "#DCE6EE",
+    "font": "sans serif",
+}
+
+
+def _theme_missing():
+    try:
+        return any(st.get_option(f"theme.{k}") != v
+                   for k, v in _APP_THEME.items())
+    except Exception:
+        return False
+
+
+if _theme_missing() and st.session_state.get("_theme_reruns", 0) < 1:
+    st.session_state["_theme_reruns"] = 1
+    try:
+        for _k, _v in _APP_THEME.items():
+            st._config.set_option(f"theme.{_k}", _v)
+        for _mode in ("light", "dark"):
+            for _k in ("primaryColor", "backgroundColor",
+                       "secondaryBackgroundColor", "textColor"):
+                try:
+                    st._config.set_option(f"theme.{_mode}.{_k}",
+                                          _APP_THEME[_k])
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    else:
+        st.rerun()
 
 def _check_password() -> bool:
     try:
@@ -523,17 +554,6 @@ with _target:
                           use_container_width=True)
 
     if not _landing:
-        with st.expander("Map style"):
-            st.checkbox("Show only the course", value=True, key="course_only",
-                        help="Paints everything outside the area your fixes "
-                             "cover the same dark colour as the page, like "
-                             "the dashboard map.")
-            st.slider("Course margin (m)", 30, 250, 60, 10,
-                      key="course_margin",
-                      help="How far beyond the outermost fixes the satellite "
-                           "image reaches. The outline is smoothed and any "
-                           "gaps inside the course are filled.")
-
         with st.expander("Saved data"):
             st.caption(
                 "Rounds you have already fetched are kept on this machine "
@@ -1040,169 +1060,9 @@ def show_table(data, **kw):
     return st.dataframe(d, **kw)
 
 
-def _fft_conv(a, k):
-    shape = (a.shape[0] + k.shape[0] - 1, a.shape[1] + k.shape[1] - 1)
-    size = tuple(1 << (int(s) - 1).bit_length() for s in shape)
-    full = np.fft.irfft2(np.fft.rfft2(a, size) * np.fft.rfft2(k, size), size)
-    y0, x0 = k.shape[0] // 2, k.shape[1] // 2
-    return full[y0:y0 + a.shape[0], x0:x0 + a.shape[1]]
-
-
-def _disk(r):
-    n = int(math.ceil(r))
-    y, x = np.ogrid[-n:n + 1, -n:n + 1]
-    return (x * x + y * y <= r * r).astype(float)
-
-
-def _dilate(a, r):
-    if r < 0.5:
-        return a.copy()
-    return _fft_conv(a.astype(float), _disk(r)) > 0.5
-
-
-def _erode(a, r):
-    if r < 0.5:
-        return a.copy()
-    return ~_dilate(~a, r)
-
-
-def _gauss(a, sigma):
-    n = max(1, int(math.ceil(3 * sigma)))
-    x = np.arange(-n, n + 1, dtype=float)
-    k = np.exp(-(x * x) / (2 * sigma * sigma))
-    k /= k.sum()
-    return _fft_conv(_fft_conv(a, k[:, None]), k[None, :])
-
-
-def _fill_holes(a):
-    outside = ~a
-    reach = np.zeros_like(a)
-    reach[0, :], reach[-1, :] = outside[0, :], outside[-1, :]
-    reach[:, 0], reach[:, -1] = outside[:, 0], outside[:, -1]
-    count = int(reach.sum())
-    while True:
-        grown = reach.copy()
-        grown[1:, :] |= reach[:-1, :]
-        grown[:-1, :] |= reach[1:, :]
-        grown[:, 1:] |= reach[:, :-1]
-        grown[:, :-1] |= reach[:, 1:]
-        grown &= outside
-        new = int(grown.sum())
-        if new == count:
-            return ~grown
-        reach, count = grown, new
-
-
-def _png_rgba(arr):
-    h, w = arr.shape[:2]
-    raw = b"".join(b"\x00" + arr[y].tobytes() for y in range(h))
-
-    def chunk(tag, data):
-        body = tag + data
-        return (struct.pack(">I", len(data)) + body
-                + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF))
-
-    return (b"\x89PNG\r\n\x1a\n"
-            + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
-            + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
-
-
-@st.cache_data(show_spinner=False, max_entries=6)
-def course_mask(lat, lon, margin_m, fill):
-    a = np.asarray(lat, dtype=float)
-    b = np.asarray(lon, dtype=float)
-    ok = np.isfinite(a) & np.isfinite(b) & ~((a == 0) & (b == 0))
-    a, b = a[ok], b[ok]
-    if len(a) == 0:
-        return None
-    mlat, mlon = float(np.median(a)), float(np.median(b))
-    near = (np.abs(a - mlat) < 0.06) & (np.abs(b - mlon) < 0.08)
-    a, b = a[near], b[near]
-    if len(a) == 0:
-        return None
-    coslat = max(math.cos(math.radians(mlat)), 0.01)
-    extent = max((a.max() - a.min()) * 111_320.0,
-                 (b.max() - b.min()) * 111_320.0 * coslat)
-    g = max(8.0, extent / 500.0)
-    dlat = g / 111_320.0
-    dlon = g / (111_320.0 * coslat)
-    ia = np.round(a / dlat).astype(np.int64)
-    ib = np.round(b / dlon).astype(np.int64)
-    cells, counts = np.unique(np.stack([ia, ib], axis=1), axis=0,
-                              return_counts=True)
-    keep = counts >= 2
-    if int(keep.sum()) < 20:
-        keep[:] = True
-    cells = cells[keep]
-    margin = max(float(margin_m), 30.0)
-    pad = int(math.ceil((300.0 + margin) / g)) + 2
-    y0, x0 = int(cells[:, 0].min()) - pad, int(cells[:, 1].min()) - pad
-    h = int(cells[:, 0].max()) - y0 + pad + 1
-    w = int(cells[:, 1].max()) - x0 + pad + 1
-    occ = np.zeros((h, w), dtype=bool)
-    occ[cells[:, 0] - y0, cells[:, 1] - x0] = True
-    grown = _dilate(occ, margin / g)
-    closed = _erode(_dilate(grown, 100.0 / g), 100.0 / g)
-    filled = _fill_holes(closed)
-    smooth = _gauss(filled.astype(float), 20.0 / g) > 0.5
-    cover = np.clip(_gauss(smooth.astype(float), 10.0 / g), 0.0, 1.0)
-    rgb = [int(fill.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4)]
-    img = np.zeros((h, w, 4), dtype=np.uint8)
-    img[..., 0], img[..., 1], img[..., 2] = rgb
-    img[..., 3] = np.round((1.0 - cover) * 255).astype(np.uint8)
-    img = np.ascontiguousarray(img[::-1])
-    bounds = ((y0 - 0.5) * dlat, (x0 - 0.5) * dlon,
-              (y0 + h - 0.5) * dlat, (x0 + w - 0.5) * dlon)
-    t = 3
-    hole = ((y0 + t - 0.5) * dlat, (x0 + t - 0.5) * dlon,
-            (y0 + h - t - 0.5) * dlat, (x0 + w - t - 0.5) * dlon)
-    url = "data:image/png;base64," + base64.b64encode(_png_rgba(img)).decode()
-    return (url, bounds, hole, fill)
-
-
-class CourseMask(MacroElement):
-    _template = Template("""
-        {% macro script(this, kwargs) %}
-        (function () {
-            var map = {{ this._parent.get_name() }};
-            map.getContainer().style.background = "{{ this.fill }}";
-            var pane = map.createPane("courseMask");
-            pane.style.zIndex = 350;
-            pane.style.pointerEvents = "none";
-            var world = [[-85, -360], [-85, 360], [85, 360], [85, -360]];
-            var hole = [[{{ this.hs }}, {{ this.hw }}], [{{ this.hs }}, {{ this.he }}],
-                        [{{ this.hn }}, {{ this.he }}], [{{ this.hn }}, {{ this.hw }}]];
-            L.polygon([world, hole], {pane: "courseMask", stroke: false,
-                fillColor: "{{ this.fill }}", fillOpacity: 1, interactive: false}).addTo(map);
-            L.imageOverlay("{{ this.url }}",
-                [[{{ this.s }}, {{ this.w }}], [{{ this.n }}, {{ this.e }}]],
-                {pane: "courseMask", interactive: false}).addTo(map);
-        })();
-        {% endmacro %}
-    """)
-
-    def __init__(self, mask):
-        super().__init__()
-        self._name = "CourseMask"
-        self.url, (self.s, self.w, self.n, self.e), hole, self.fill = mask
-        self.hs, self.hw, self.hn, self.he = hole
-
-
-def add_course_mask(m, mask):
-    if mask:
-        m.add_child(CourseMask(mask))
-    else:
-        m.get_root().header.add_child(folium.Element(
-            "<style>.leaflet-container { background: " + C_BG + "; }</style>"))
-
-
-def mask_args():
-    d = st.session_state.get("df")
-    if d is None or not st.session_state.get("course_only", True):
-        return {"mask": None}
-    return {"mask": course_mask(
-        d["lat"].to_numpy(), d["lon"].to_numpy(),
-        float(st.session_state.get("course_margin", 60)), C_BG)}
+def dark_seams(m):
+    m.get_root().header.add_child(folium.Element(
+        "<style>.leaflet-container { background: " + C_BG + "; }</style>"))
 
 
 def hex_to_dec(v):
@@ -1662,7 +1522,7 @@ def bin_key(lat, lon, metres):
 def build_category_map(pts, mode, colour_by, bin_m, show_handovers,
                        center_lat, center_lon, line_weight, palette,
                        dim_imagery, theme, casing, text_col, tile_filter,
-                       label_singular="change", mask=None):
+                       label_singular="change"):
     m = folium.Map(location=[center_lat, center_lon], zoom_start=16,
                    max_zoom=20, tiles=None, control_scale=True)
     folium.TileLayer(
@@ -1773,7 +1633,7 @@ def build_category_map(pts, mode, colour_by, bin_m, show_handovers,
         for fg in groups.values():
             fg.add_to(m)
 
-    add_course_mask(m, mask)
+    dark_seams(m)
     folium.LayerControl(collapsed=False).add_to(m)
     return m.get_root().render()
 
@@ -1913,8 +1773,7 @@ def render_network_view(df):
             num(sel["lat"].mean()), num(sel["lon"].mean()), line_weight,
             tuple(sorted(net_colours(
                 sel[colour_by].dropna().unique()).items())),
-            dim_imagery, THEME, C_CASING, C_TEXT, TILE_FILTER,
-            **mask_args())
+            dim_imagery, THEME, C_CASING, C_TEXT, TILE_FILTER)
     components.html(html, height=660, scrolling=False)
 
     cmap = net_colours(sel[colour_by].dropna().unique())
@@ -2285,7 +2144,7 @@ def render_buffered_view(df):
             sel[cols], mode, "delivery", bin_m, show_marks,
             num(sel["lat"].mean()), num(sel["lon"].mean()), line_weight,
             PAL, dim_imagery, THEME, C_CASING, C_TEXT, TILE_FILTER,
-            label_singular="switch", **mask_args())
+            label_singular="switch")
     components.html(html, height=660, scrolling=False)
 
     share = (sel["delivery"].value_counts(normalize=True) * 100).round(2)
@@ -2450,8 +2309,7 @@ def render_accuracy_view(df):
             exact, dim_imagery, float(a.quantile(0.05)),
             float(a.quantile(0.95)), THEME, C_TEXT, TILE_FILTER,
             ((0.00, C_OK), (0.25, C_GOOD), (0.50, C_WARN),
-             (0.75, C_HIGH), (1.00, C_BAD)),
-            **mask_args())
+             (0.75, C_HIGH), (1.00, C_BAD)))
     components.html(html, height=660, scrolling=False)
     st.caption(
         ("Corridor width is the true accuracy radius on the ground — it "
@@ -2501,7 +2359,7 @@ def render_accuracy_view(df):
 
 @st.cache_data(show_spinner=False, max_entries=12)
 def build_accuracy_map(pts, center_lat, center_lon, exact, dim_imagery,
-                       lo_m, hi_m, theme, text_col, tile_filter, ramp, mask=None):
+                       lo_m, hi_m, theme, text_col, tile_filter, ramp):
     m = folium.Map(location=[center_lat, center_lon], zoom_start=16,
                    max_zoom=20, tiles=None, control_scale=True,
                    prefer_canvas=True)
@@ -2554,7 +2412,7 @@ def build_accuracy_map(pts, center_lat, center_lon, exact, dim_imagery,
 
     corridor.add_to(m)
     route.add_to(m)
-    add_course_mask(m, mask)
+    dark_seams(m)
     folium.LayerControl(collapsed=False).add_to(m)
     return m.get_root().render()
 
@@ -2579,7 +2437,7 @@ def _heat(u: float) -> str:
 @st.cache_data(show_spinner=False, max_entries=12)
 def build_signal_map(pts, metric, route, flag_pct, center_lat, center_lon,
                      dim_imagery, casing, text_col, tile_filter,
-                     limit, lo, hi, mask=None):
+                     limit, lo, hi):
     m = folium.Map(location=[center_lat, center_lon], zoom_start=16,
                    max_zoom=20, tiles=None, control_scale=True,
                    prefer_canvas=True)
@@ -2676,7 +2534,7 @@ def build_signal_map(pts, metric, route, flag_pct, center_lat, center_lon,
     route_fg.add_to(m)
     ok.add_to(m)
     over.add_to(m)
-    add_course_mask(m, mask)
+    dark_seams(m)
     folium.LayerControl(collapsed=False).add_to(m)
     return m.get_root().render()
 
@@ -2905,8 +2763,7 @@ def render_hdop_snr_view(df):
         html = build_signal_map(
             pts[cols], metric, route, float(flag),
             num(pts["lat"].mean()), num(pts["lon"].mean()), dim, C_CASING,
-            C_TEXT, TILE_FILTER, float(limit), float(lo), float(hi),
-            **mask_args())
+            C_TEXT, TILE_FILTER, float(limit), float(lo), float(hi))
     components.html(html, height=660, scrolling=False)
 
     if metric == "valid":
@@ -3346,7 +3203,7 @@ def build_map_html(bad, ctx_pts, center_lat, center_lon, metric_col,
                    thresh,
                    spread, log_weight, radius, blur, intensity,
                    show_markers, n_markers, show_lines, theme, gradient,
-                   ctx_col, marker_col, good_col, mask=None):
+                   ctx_col, marker_col, good_col):
     def _weight(v: float) -> float:
         return math.log1p(v) if log_weight else v
 
@@ -3449,7 +3306,7 @@ def build_map_html(bad, ctx_pts, center_lat, center_lon, metric_col,
                                     color=color, fill=True,
                                     fill_opacity=1).add_to(ln)
             ln.add_to(m)
-    add_course_mask(m, mask)
+    dark_seams(m)
     folium.LayerControl(collapsed=False).add_to(m)
     return m.get_root().render()
 
@@ -3468,7 +3325,7 @@ with right:
             THEME,
             ((0.10, C_OK), (0.30, C_GOOD), (0.50, C_WARN),
              (0.68, C_HIGH), (0.84, C_BAD), (1.0, C_EXTREME)),
-            C_GOOD, C_BAD, C_HIGH, **mask_args())
+            C_GOOD, C_BAD, C_HIGH)
     components.html(_html, height=660, scrolling=False)
     MAP_HTML = _html
 
@@ -3912,7 +3769,7 @@ def render_drilldown(fdf, col, noun):
                     THEME,
                     ((0.10, C_OK), (0.30, C_GOOD), (0.50, C_WARN),
                      (0.68, C_HIGH), (0.84, C_BAD), (1.0, C_EXTREME)),
-                    C_GOOD, C_BAD, C_HIGH, **mask_args())
+                    C_GOOD, C_BAD, C_HIGH)
         except Exception:
             sel_map = globals().get("MAP_HTML", "")
 

@@ -87,11 +87,20 @@ draws itself; keep the two in step.
 
 ## Course-only maps
 
-`course_footprint` bins every fix into a 20 m grid (dropping stray fixes
-and cells seen once), and `CourseMask` paints the page colour over the map
-except for circles of the chosen margin around those cells. The layer sits
-between the satellite tiles and the markers, so heat, markers and popups
-are unaffected. It is applied in every map builder through `mask_args()`.
+`course_mask` turns all the fixes into a small soft-edged image (an 8 m
+grid, or coarser for very large courses). Steps: bin fixes into cells
+(dropping stray fixes and cells seen once), thicken by the margin so gaps
+between fixes join up, close the remaining notches with a 100 m closing,
+fill every enclosed hole, smooth the outline (20 m blur, re-thresholded)
+and feather the edge (10 m blur). The result is a PNG whose alpha is the
+darkness outside the course.
+
+`CourseMask` places it as an image overlay between the satellite tiles
+and the markers, with a dark polygon covering everything outside the
+image, and gives the map container the same dark colour so tile seams do
+not show as pale lines. It is applied in every map builder through
+`mask_args()`. A thin dotted line of fixes would vanish under the blur, so
+the margin has a 30 m minimum.
 
 ## Changing the app
 

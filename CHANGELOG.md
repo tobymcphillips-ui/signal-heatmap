@@ -10,6 +10,23 @@ Buffered fixes views, the drill-down and "where to look" suggestion
 tabs, and client export; v4.0 introduced the landing-page-into-sidebar
 flow. From here on, changes are logged properly.
 
+## v5.4
+
+**Changed**
+- The course-only mask is rebuilt. v5.3 drew a circle round every fix, so
+  sparse stretches left gaps in the middle and the outline followed every
+  bump. Now the area is thickened by the margin so gaps join up, notches
+  are closed, every enclosed hole is filled, the outline is smoothed and
+  the edge is feathered. It also reaches a little beyond the outermost
+  fixes.
+- *Course margin (m)* now means how far beyond the outermost fixes the
+  image reaches: 30 to 250, default 60 (was 30 to 250, default 70, a
+  circle radius).
+
+**Fixed**
+- Pale lines between satellite tiles. The map container showed through
+  the seams in light grey; it now has the page's dark colour.
+
 ## v5.3
 
 **Added**

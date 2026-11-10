@@ -1,9 +1,12 @@
+import base64
 import hashlib
 import json
 import html as html_mod
 import math
 import re
+import struct
 import time
+import zlib
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -18,7 +21,7 @@ from folium.plugins import HeatMap
 from jinja2 import Template
 import streamlit.components.v1 as components
 
-APP_VERSION = "v5.3"
+APP_VERSION = "v5.4"
 
 _HAS_DATA = st.session_state.get("df") is not None
 
@@ -525,11 +528,11 @@ with _target:
                         help="Paints everything outside the area your fixes "
                              "cover the same dark colour as the page, like "
                              "the dashboard map.")
-            st.slider("Course margin (m)", 30, 250, 70, 10,
+            st.slider("Course margin (m)", 30, 250, 60, 10,
                       key="course_margin",
-                      help="How far around the fixes the satellite image is "
-                           "kept. Raise it if parts of the course are cut "
-                           "off.")
+                      help="How far beyond the outermost fixes the satellite "
+                           "image reaches. The outline is smoothed and any "
+                           "gaps inside the course are filled.")
 
         with st.expander("Saved data"):
             st.caption(
@@ -1037,31 +1040,124 @@ def show_table(data, **kw):
     return st.dataframe(d, **kw)
 
 
-@st.cache_data(show_spinner=False, max_entries=4)
-def course_footprint(lat, lon, cell_m=20, min_fixes=2):
+def _fft_conv(a, k):
+    shape = (a.shape[0] + k.shape[0] - 1, a.shape[1] + k.shape[1] - 1)
+    size = tuple(1 << (int(s) - 1).bit_length() for s in shape)
+    full = np.fft.irfft2(np.fft.rfft2(a, size) * np.fft.rfft2(k, size), size)
+    y0, x0 = k.shape[0] // 2, k.shape[1] // 2
+    return full[y0:y0 + a.shape[0], x0:x0 + a.shape[1]]
+
+
+def _disk(r):
+    n = int(math.ceil(r))
+    y, x = np.ogrid[-n:n + 1, -n:n + 1]
+    return (x * x + y * y <= r * r).astype(float)
+
+
+def _dilate(a, r):
+    if r < 0.5:
+        return a.copy()
+    return _fft_conv(a.astype(float), _disk(r)) > 0.5
+
+
+def _erode(a, r):
+    if r < 0.5:
+        return a.copy()
+    return ~_dilate(~a, r)
+
+
+def _gauss(a, sigma):
+    n = max(1, int(math.ceil(3 * sigma)))
+    x = np.arange(-n, n + 1, dtype=float)
+    k = np.exp(-(x * x) / (2 * sigma * sigma))
+    k /= k.sum()
+    return _fft_conv(_fft_conv(a, k[:, None]), k[None, :])
+
+
+def _fill_holes(a):
+    outside = ~a
+    reach = np.zeros_like(a)
+    reach[0, :], reach[-1, :] = outside[0, :], outside[-1, :]
+    reach[:, 0], reach[:, -1] = outside[:, 0], outside[:, -1]
+    count = int(reach.sum())
+    while True:
+        grown = reach.copy()
+        grown[1:, :] |= reach[:-1, :]
+        grown[:-1, :] |= reach[1:, :]
+        grown[:, 1:] |= reach[:, :-1]
+        grown[:, :-1] |= reach[:, 1:]
+        grown &= outside
+        new = int(grown.sum())
+        if new == count:
+            return ~grown
+        reach, count = grown, new
+
+
+def _png_rgba(arr):
+    h, w = arr.shape[:2]
+    raw = b"".join(b"\x00" + arr[y].tobytes() for y in range(h))
+
+    def chunk(tag, data):
+        body = tag + data
+        return (struct.pack(">I", len(data)) + body
+                + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF))
+
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
+
+
+@st.cache_data(show_spinner=False, max_entries=6)
+def course_mask(lat, lon, margin_m, fill):
     a = np.asarray(lat, dtype=float)
     b = np.asarray(lon, dtype=float)
     ok = np.isfinite(a) & np.isfinite(b) & ~((a == 0) & (b == 0))
     a, b = a[ok], b[ok]
     if len(a) == 0:
-        return ()
+        return None
     mlat, mlon = float(np.median(a)), float(np.median(b))
     near = (np.abs(a - mlat) < 0.06) & (np.abs(b - mlon) < 0.08)
     a, b = a[near], b[near]
     if len(a) == 0:
-        return ()
-    dlat = cell_m / 111_320.0
-    dlon = cell_m / (111_320.0 * max(math.cos(math.radians(mlat)), 0.01))
+        return None
+    coslat = max(math.cos(math.radians(mlat)), 0.01)
+    extent = max((a.max() - a.min()) * 111_320.0,
+                 (b.max() - b.min()) * 111_320.0 * coslat)
+    g = max(8.0, extent / 500.0)
+    dlat = g / 111_320.0
+    dlon = g / (111_320.0 * coslat)
     ia = np.round(a / dlat).astype(np.int64)
     ib = np.round(b / dlon).astype(np.int64)
     cells, counts = np.unique(np.stack([ia, ib], axis=1), axis=0,
                               return_counts=True)
-    keep = counts >= min_fixes
+    keep = counts >= 2
     if int(keep.sum()) < 20:
         keep[:] = True
     cells = cells[keep]
-    return tuple((round(float(x) * dlat, 5), round(float(y) * dlon, 5))
-                 for x, y in cells)
+    margin = max(float(margin_m), 30.0)
+    pad = int(math.ceil((300.0 + margin) / g)) + 2
+    y0, x0 = int(cells[:, 0].min()) - pad, int(cells[:, 1].min()) - pad
+    h = int(cells[:, 0].max()) - y0 + pad + 1
+    w = int(cells[:, 1].max()) - x0 + pad + 1
+    occ = np.zeros((h, w), dtype=bool)
+    occ[cells[:, 0] - y0, cells[:, 1] - x0] = True
+    grown = _dilate(occ, margin / g)
+    closed = _erode(_dilate(grown, 100.0 / g), 100.0 / g)
+    filled = _fill_holes(closed)
+    smooth = _gauss(filled.astype(float), 20.0 / g) > 0.5
+    cover = np.clip(_gauss(smooth.astype(float), 10.0 / g), 0.0, 1.0)
+    rgb = [int(fill.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4)]
+    img = np.zeros((h, w, 4), dtype=np.uint8)
+    img[..., 0], img[..., 1], img[..., 2] = rgb
+    img[..., 3] = np.round((1.0 - cover) * 255).astype(np.uint8)
+    img = np.ascontiguousarray(img[::-1])
+    bounds = ((y0 - 0.5) * dlat, (x0 - 0.5) * dlon,
+              (y0 + h - 0.5) * dlat, (x0 + w - 0.5) * dlon)
+    t = 3
+    hole = ((y0 + t - 0.5) * dlat, (x0 + t - 0.5) * dlon,
+            (y0 + h - t - 0.5) * dlat, (x0 + w - t - 0.5) * dlon)
+    url = "data:image/png;base64," + base64.b64encode(_png_rgba(img)).decode()
+    return (url, bounds, hole, fill)
 
 
 class CourseMask(MacroElement):
@@ -1069,68 +1165,44 @@ class CourseMask(MacroElement):
         {% macro script(this, kwargs) %}
         (function () {
             var map = {{ this._parent.get_name() }};
-            var pts = {{ this.pts }};
-            var radius = {{ this.radius }};
-            var fill = "{{ this.fill }}";
+            map.getContainer().style.background = "{{ this.fill }}";
             var pane = map.createPane("courseMask");
             pane.style.zIndex = 350;
             pane.style.pointerEvents = "none";
-            var canvas = document.createElement("canvas");
-            canvas.style.position = "absolute";
-            pane.appendChild(canvas);
-            function redraw() {
-                var size = map.getSize();
-                var dpr = window.devicePixelRatio || 1;
-                canvas.width = size.x * dpr;
-                canvas.height = size.y * dpr;
-                canvas.style.width = size.x + "px";
-                canvas.style.height = size.y + "px";
-                L.DomUtil.setPosition(canvas, map.containerPointToLayerPoint([0, 0]));
-                var ctx = canvas.getContext("2d");
-                ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-                ctx.globalCompositeOperation = "source-over";
-                ctx.fillStyle = fill;
-                ctx.fillRect(0, 0, size.x, size.y);
-                ctx.globalCompositeOperation = "destination-out";
-                var lat = map.getCenter().lat;
-                var mpp = 156543.03392 * Math.cos(lat * Math.PI / 180) / Math.pow(2, map.getZoom());
-                var r = radius / mpp;
-                ctx.beginPath();
-                for (var i = 0; i < pts.length; i++) {
-                    var p = map.latLngToContainerPoint([pts[i][0], pts[i][1]]);
-                    if (p.x < -r || p.y < -r || p.x > size.x + r || p.y > size.y + r) { continue; }
-                    ctx.moveTo(p.x + r, p.y);
-                    ctx.arc(p.x, p.y, r, 0, 6.2832);
-                }
-                ctx.fill();
-            }
-            map.on("move zoom viewreset resize zoomend moveend", redraw);
-            redraw();
+            var world = [[-85, -360], [-85, 360], [85, 360], [85, -360]];
+            var hole = [[{{ this.hs }}, {{ this.hw }}], [{{ this.hs }}, {{ this.he }}],
+                        [{{ this.hn }}, {{ this.he }}], [{{ this.hn }}, {{ this.hw }}]];
+            L.polygon([world, hole], {pane: "courseMask", stroke: false,
+                fillColor: "{{ this.fill }}", fillOpacity: 1, interactive: false}).addTo(map);
+            L.imageOverlay("{{ this.url }}",
+                [[{{ this.s }}, {{ this.w }}], [{{ this.n }}, {{ this.e }}]],
+                {pane: "courseMask", interactive: false}).addTo(map);
         })();
         {% endmacro %}
     """)
 
-    def __init__(self, pts, radius_m, fill):
+    def __init__(self, mask):
         super().__init__()
         self._name = "CourseMask"
-        self.pts = json.dumps([list(p) for p in pts])
-        self.radius = float(radius_m)
-        self.fill = fill
+        self.url, (self.s, self.w, self.n, self.e), hole, self.fill = mask
+        self.hs, self.hw, self.hn, self.he = hole
 
 
-def add_course_mask(m, footprint, mask_m, mask_fill):
-    if footprint and mask_m > 0:
-        m.add_child(CourseMask(footprint, mask_m, mask_fill))
+def add_course_mask(m, mask):
+    if mask:
+        m.add_child(CourseMask(mask))
+    else:
+        m.get_root().header.add_child(folium.Element(
+            "<style>.leaflet-container { background: " + C_BG + "; }</style>"))
 
 
 def mask_args():
     d = st.session_state.get("df")
     if d is None or not st.session_state.get("course_only", True):
-        return {"footprint": (), "mask_m": 0.0, "mask_fill": C_BG}
-    fp = course_footprint(d["lat"].to_numpy(), d["lon"].to_numpy())
-    return {"footprint": fp,
-            "mask_m": float(st.session_state.get("course_margin", 70)),
-            "mask_fill": C_BG}
+        return {"mask": None}
+    return {"mask": course_mask(
+        d["lat"].to_numpy(), d["lon"].to_numpy(),
+        float(st.session_state.get("course_margin", 60)), C_BG)}
 
 
 def hex_to_dec(v):
@@ -1590,8 +1662,7 @@ def bin_key(lat, lon, metres):
 def build_category_map(pts, mode, colour_by, bin_m, show_handovers,
                        center_lat, center_lon, line_weight, palette,
                        dim_imagery, theme, casing, text_col, tile_filter,
-                       label_singular="change", footprint=(), mask_m=0.0,
-                       mask_fill="#0B1016"):
+                       label_singular="change", mask=None):
     m = folium.Map(location=[center_lat, center_lon], zoom_start=16,
                    max_zoom=20, tiles=None, control_scale=True)
     folium.TileLayer(
@@ -1702,7 +1773,7 @@ def build_category_map(pts, mode, colour_by, bin_m, show_handovers,
         for fg in groups.values():
             fg.add_to(m)
 
-    add_course_mask(m, footprint, mask_m, mask_fill)
+    add_course_mask(m, mask)
     folium.LayerControl(collapsed=False).add_to(m)
     return m.get_root().render()
 
@@ -2430,8 +2501,7 @@ def render_accuracy_view(df):
 
 @st.cache_data(show_spinner=False, max_entries=12)
 def build_accuracy_map(pts, center_lat, center_lon, exact, dim_imagery,
-                       lo_m, hi_m, theme, text_col, tile_filter, ramp,
-                       footprint=(), mask_m=0.0, mask_fill="#0B1016"):
+                       lo_m, hi_m, theme, text_col, tile_filter, ramp, mask=None):
     m = folium.Map(location=[center_lat, center_lon], zoom_start=16,
                    max_zoom=20, tiles=None, control_scale=True,
                    prefer_canvas=True)
@@ -2484,7 +2554,7 @@ def build_accuracy_map(pts, center_lat, center_lon, exact, dim_imagery,
 
     corridor.add_to(m)
     route.add_to(m)
-    add_course_mask(m, footprint, mask_m, mask_fill)
+    add_course_mask(m, mask)
     folium.LayerControl(collapsed=False).add_to(m)
     return m.get_root().render()
 
@@ -2509,8 +2579,7 @@ def _heat(u: float) -> str:
 @st.cache_data(show_spinner=False, max_entries=12)
 def build_signal_map(pts, metric, route, flag_pct, center_lat, center_lon,
                      dim_imagery, casing, text_col, tile_filter,
-                     limit, lo, hi, footprint=(), mask_m=0.0,
-                     mask_fill="#0B1016"):
+                     limit, lo, hi, mask=None):
     m = folium.Map(location=[center_lat, center_lon], zoom_start=16,
                    max_zoom=20, tiles=None, control_scale=True,
                    prefer_canvas=True)
@@ -2607,7 +2676,7 @@ def build_signal_map(pts, metric, route, flag_pct, center_lat, center_lon,
     route_fg.add_to(m)
     ok.add_to(m)
     over.add_to(m)
-    add_course_mask(m, footprint, mask_m, mask_fill)
+    add_course_mask(m, mask)
     folium.LayerControl(collapsed=False).add_to(m)
     return m.get_root().render()
 
@@ -3277,8 +3346,7 @@ def build_map_html(bad, ctx_pts, center_lat, center_lon, metric_col,
                    thresh,
                    spread, log_weight, radius, blur, intensity,
                    show_markers, n_markers, show_lines, theme, gradient,
-                   ctx_col, marker_col, good_col, footprint=(), mask_m=0.0,
-                   mask_fill="#0B1016"):
+                   ctx_col, marker_col, good_col, mask=None):
     def _weight(v: float) -> float:
         return math.log1p(v) if log_weight else v
 
@@ -3381,7 +3449,7 @@ def build_map_html(bad, ctx_pts, center_lat, center_lon, metric_col,
                                     color=color, fill=True,
                                     fill_opacity=1).add_to(ln)
             ln.add_to(m)
-    add_course_mask(m, footprint, mask_m, mask_fill)
+    add_course_mask(m, mask)
     folium.LayerControl(collapsed=False).add_to(m)
     return m.get_root().render()
 

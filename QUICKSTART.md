@@ -167,14 +167,17 @@ letters is treated as hex.
 
 ## Map style: only the course
 
-Every map shows the satellite image only where your fixes are, and fills
+Every map shows the satellite image only over the course and fills
 everything else with the page's dark colour, like the dashboard map. The
 area is worked out from **all** the loaded fixes, so it stays the same
-whatever you filter or select. In the sidebar, **Map style** has two
-controls: *Show only the course* (untick it to see the whole satellite
-map again) and *Course margin (m)*, how far around the fixes the image
-is kept. Raise the margin if parts of the course are cut off. Stray
-fixes far from the course are ignored when the area is drawn.
+whatever you filter or select. Gaps between fixes are bridged, anything
+enclosed is filled in, and the outline is smoothed with a soft edge.
+
+In the sidebar, **Map style** has two controls: *Show only the course*
+(untick it to see the whole satellite map again) and *Course margin (m)*,
+how far beyond the outermost fixes the image reaches (30 to 250, default
+60). Raise it if parts of the course are cut off. Stray fixes far from the
+course are ignored.
 
 ## Reading the results
 

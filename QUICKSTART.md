@@ -97,8 +97,12 @@ the outage.
 
 ## 6. Narrow it down
 
-- **Drill down** — the one detailed view. It sits in its own box: pick any
-  set of holes, zones or tags and see everything about them. The other
+The **Tags** box under the map settings says *All tags selected* until you
+pick some. Pick the tags you want and press **Apply filters**; **Show all**
+puts it back.
+
+- **Drill down** — the one detailed view. Its selector sits in a box: pick
+  any set of holes, zones or tags and see everything about them. The other
   tabs always show everything.
 - **By round** — each round on its own.
 - **Where to look** (under *More*) — does it for you. It raises the
@@ -129,14 +133,12 @@ is the **Accuracy** tab beside it).
   (*invalid below*). They start at Fix HDOP 1.2 / SNR 18 and Geo HDOP 0.8 / SNR 21 —
   change them if your devices are configured differently. They are remembered
   while you move between views.
-- **Suggested HDOP** and **Suggested SNR** work out a limit from your own
-  data. Every HDOP reading is sorted from highest to lowest and the first 3%
-  (the outliers) are cut off; the suggested HDOP is the value where the cut
-  falls. SNR is the other way round: sorted from lowest to highest, with the
-  lowest 3% cut off. With 10,000 readings that is the 300th one. Press
-  **Test suggested** to put both values into the threshold chosen under
-  **Against** (Fix or Geo) and see what the map and the *Invalid* figures do.
-  The other threshold is left alone.
+- **Suggested HDOP** and **Suggested SNR** work out limits from your own
+  data, leaving out the most extreme readings (the outliers). **Test
+  suggested**, underneath them, puts the suggestions into the **Fix**
+  threshold and sets the **Geo** threshold a little tighter — HDOP 0.1 lower
+  and SNR 1 higher — so you can see how the map and the *Invalid* figures
+  change. You can still edit any of the four boxes afterwards.
 - A fix is **invalid** when its HDOP is above the limit **or** its SNR is
   below it. A value sitting exactly on the limit passes. A fix that
   carried neither reading is left out rather than counted as good or bad.
@@ -144,10 +146,8 @@ is the **Accuracy** tab beside it).
   invalid.
 - The map has three modes under **Show**:
   - **Valid / invalid** — green where fixes pass both tests, red where
-    they fail. A grid square turns red once the share of failing fixes in
-    it reaches the **Flag a square at** setting (25% to start; lower it to
-    catch small pockets, raise it to see only places that are bad
-    throughout).
+    they fail. A grid square turns red where a quarter or more of the
+    fixes in it fail.
   - **HDOP only** and **SNR only** — each reading coloured by quality,
     green for the best through yellow to orange for the poorest that still
     passes. Anything **over the limit is red, larger and ringed**, so a

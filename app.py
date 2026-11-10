@@ -16,7 +16,7 @@ import folium
 from folium.plugins import HeatMap
 import streamlit.components.v1 as components
 
-APP_VERSION = "v5.8"
+APP_VERSION = "v5.9"
 
 _HAS_DATA = st.session_state.get("df") is not None
 
@@ -1000,7 +1000,7 @@ LABELS = {
     "share": "Share %", "share_%": "Share %",
     "diff_s": "Delay (s)", "gap_s": "Gap (s)",
     "interval_s": "Interval (s)",
-    "median_diff_s": "Median delay (s)", "p95_diff_s": "95th pct (s)",
+    "median_diff_s": "Median delay (s)",
     "max_diff_s": "Worst delay (s)", "max_gap_s": "Longest gap (s)",
     "health_pct": "Health %", "within_ok_pct": "Within 5s %",
     "pct_of_group": "In focus %",
@@ -1015,7 +1015,7 @@ LABELS = {
     "tower_lat": "Tower latitude", "tower_lon": "Tower longitude",
     "distance_m": "Distance to tower (m)",
     "accuracy_m": "Accuracy (m)", "median_m": "Median (m)",
-    "p95_m": "95th pct (m)", "worst_m": "Worst (m)",
+    "worst_m": "Worst (m)",
     "net_name": "Operator", "buffered": "Buffered",
     "delivery": "Delivery", "is_cached": "Buffered",
     "buffered_fixes": "Buffered fixes", "burst": "Burst",
@@ -1045,7 +1045,6 @@ def col_label(col: str) -> str:
     n = globals().get("NOUN", "delay").capitalize()
     ok = globals().get("OK_S", 5.0)
     dynamic = {"median_val": f"Median {n.lower()} (s)",
-               "p95_val": "95th pct (s)",
                "max_val": f"Worst {n.lower()} (s)",
                "pct_delayed": f"Over {ok:.0f}s %",
                "health_pct": "Health %",
@@ -1761,18 +1760,14 @@ def render_network_view(df):
     bin_m = 25
     line_weight = 4
     show_handovers = True
+    dim_imagery = True
     if mode == "aggregate":
         bin_m = o2.slider("Grid size (m)", 10, 100, 25, 5,
                           help="Each square takes the operator seen most "
                                "often inside it.")
-        dim_imagery = o3.checkbox(
-            "Dim satellite", value=True,
-            help="Darkens the photo so the colours stand out. Turn off to "
-                 "read the terrain.")
     else:
         line_weight = o2.slider("Line weight", 2, 8, 4)
         show_handovers = o3.checkbox("Mark handovers", value=True)
-        dim_imagery = o3.checkbox("Dim satellite", value=True)
 
     sel = sel.dropna(subset=["lat", "lon"]).sort_values("recorded")
     if mode == "aggregate":
@@ -2118,20 +2113,16 @@ def render_buffered_view(df):
         return
 
     o1, o2, o3 = st.columns(3)
-    bin_m, line_weight, show_marks = 25, 4, True
+    bin_m, line_weight, show_marks, dim_imagery = 25, 4, True, True
     if mode == "aggregate":
         bin_m = o1.slider("Grid size (m)", 10, 100, 25, 5, key="buf_bin",
                           help="Each square takes whichever delivery type "
                                "was more common inside it.")
-        dim_imagery = o2.checkbox("Dim satellite", value=True,
-                                  key="buf_dim1")
     else:
         show_marks = o1.checkbox("Mark switches", value=True,
                                  key="buf_marks",
                                  help="Marks each fix where delivery "
                                       "changed between live and buffered.")
-        dim_imagery = o2.checkbox("Dim satellite", value=True,
-                                  key="buf_dim2")
 
     sel = sel.dropna(subset=["lat", "lon"]).sort_values("recorded")
     if mode == "aggregate":
@@ -2318,7 +2309,7 @@ def render_accuracy_view(df):
                       key="acc_cap",
                       help="A handful of wild fixes would otherwise set "
                            "the colour scale for the whole course.")
-    dim_imagery = o3.checkbox("Dim satellite", value=True, key="acc_dim")
+    dim_imagery = True
 
     sel = sel[sel["accuracy_m"] <= cap_m].dropna(subset=["lat", "lon"])
     if sel.empty:
@@ -2326,11 +2317,10 @@ def render_accuracy_view(df):
         return
 
     a = sel["accuracy_m"]
-    k1, k2, k3, k4 = st.columns(4)
+    k1, k2, k3 = st.columns(3)
     k1.metric("Median accuracy", f"{a.median():.1f} m")
-    k2.metric("95th percentile", f"{a.quantile(0.95):.1f} m")
-    k3.metric("Worst accuracy", f"{a.max():.1f} m")
-    k4.metric("Fixes over 10 m", f"{int((a > 10).sum()):,}",
+    k2.metric("Worst accuracy", f"{a.max():.1f} m")
+    k3.metric("Fixes over 10 m", f"{int((a > 10).sum()):,}",
               help="A GPS fix good to a few metres is normal in the open. "
                    "Persistent double digits means sky blockage or a poor "
                    "constellation lock.")
@@ -2359,7 +2349,6 @@ def render_accuracy_view(df):
         by_l = (sel.groupby("location")
                 .agg(fixes=("lat", "count"),
                      median_m=("accuracy_m", "median"),
-                     p95_m=("accuracy_m", lambda s: s.quantile(0.95)),
                      worst_m=("accuracy_m", "max")).round(1))
         by_l = by_l.reindex(zone_order(by_l.index))
         show_table(by_l)
@@ -2382,7 +2371,6 @@ def render_accuracy_view(df):
         by_t = (sel.groupby(["tag", "device_id"])
                 .agg(rounds=("round_id", "nunique"), fixes=("lat", "count"),
                      median_m=("accuracy_m", "median"),
-                     p95_m=("accuracy_m", lambda s: s.quantile(0.95)),
                      worst_m=("accuracy_m", "max"))
                 .reset_index().round(1))
         by_t["_k"] = pd.to_numeric(by_t["tag"], errors="coerce")
@@ -2655,9 +2643,10 @@ def suggest_limits(hdop, snr, cut=SUGGEST_CUT_PCT):
 
 
 def _apply_suggested(sug_hdop, sug_snr):
-    which = str(st.session_state.get("hs_which", "Fix threshold"))
-    k = "fix" if which.startswith("Fix") else "geo"
-    for key, val in ((f"thr_{k}_hdop", sug_hdop), (f"thr_{k}_snr", sug_snr)):
+    geo_hdop = max(0.0, round(float(sug_hdop) - 0.1, 1))
+    geo_snr = round(float(sug_snr) + 1.0, 1)
+    for key, val in (("thr_fix_hdop", sug_hdop), ("thr_fix_snr", sug_snr),
+                     ("thr_geo_hdop", geo_hdop), ("thr_geo_snr", geo_snr)):
         st.session_state[key] = float(val)
         st.session_state["_" + key] = float(val)
 
@@ -2729,27 +2718,19 @@ def render_hdop_snr_view(df):
         return "—" if pd.isna(v) else f"{v:.{dp}f}"
 
     sug_h, sug_s = suggest_limits(d["hdop"], d["snr"])
-    k1, k2, k3 = st.columns(3)
+    k1, k2 = st.columns(2)
     k1.metric("Suggested HDOP", "—" if sug_h is None else f"{sug_h:.1f}",
-              help=f"Sort every HDOP reading from highest to lowest and cut "
-                   f"off the first {SUGGEST_CUT_PCT:g}% — the outliers. "
-                   "This is the value where the cut falls: fixes with a "
-                   "higher HDOP would be invalid.")
+              help="An HDOP limit that leaves out the worst readings. "
+                   "Fixes with a higher HDOP would be invalid.")
     k2.metric("Suggested SNR", "—" if sug_s is None else f"{sug_s:.1f}",
-              help=f"Sort every SNR reading from lowest to highest and cut "
-                   f"off the first {SUGGEST_CUT_PCT:g}% — the outliers. "
-                   "This is the value where the cut falls: fixes with a "
-                   "lower SNR would be invalid.")
-    with k3:
-        st.markdown('<div style="height:26px"></div>',
-                    unsafe_allow_html=True)
-        st.button("Test suggested", key="hs_test_suggested",
-                  on_click=_apply_suggested, args=(sug_h, sug_s),
-                  disabled=sug_h is None or sug_s is None,
-                  use_container_width=True,
-                  help="Sets the HDOP and SNR limits of the threshold chosen "
-                       "under Against to the suggested values, so you can "
-                       "see how the map changes.")
+              help="An SNR limit that leaves out the weakest readings. "
+                   "Fixes with a lower SNR would be invalid.")
+    st.button("Test suggested", key="hs_test_suggested",
+              on_click=_apply_suggested, args=(sug_h, sug_s),
+              disabled=sug_h is None or sug_s is None,
+              use_container_width=True,
+              help="Sets the Fix limits to the suggested values and the Geo "
+                   "limits a little tighter: HDOP 0.1 lower, SNR 1 higher.")
     k4, k5, k6 = st.columns(3)
     k4.metric("Invalid vs Fix", fmt_pct(100 * d["fix_invalid"].mean()),
               help=f"Fixes with HDOP above {fix_hdop:g} or SNR below "
@@ -2760,11 +2741,6 @@ def render_hdop_snr_view(df):
     k6.metric("Fixes with data", f"{len(d):,}",
               help=f"{100 * len(d) / max(len(df), 1):.0f}% of all fixes "
                    "carried an HDOP or SNR value. The rest are left out.")
-    _tgt = "fix" if str(st.session_state.get("hs_which", "Fix threshold")
-                        ).startswith("Fix") else "geo"
-    st.caption(f"Suggested limits cut off the most extreme "
-               f"{SUGGEST_CUT_PCT:g}% of readings at the bad end. "
-               f"**Test suggested** sets the {_tgt} threshold to them.")
 
     r1, r2 = st.columns(2)
     show = r1.radio("Show", ["Valid / invalid", "HDOP only", "SNR only"],
@@ -2797,16 +2773,7 @@ def render_hdop_snr_view(df):
         sel = d[d["round_id"] == rid]
 
     route = scope == "Single round"
-    o1, o2, o3 = st.columns(3)
-    bin_m, flag = 25, 25
-    if not route:
-        bin_m = o1.slider("Grid size (m)", 10, 100, 25, 5, key="hs_bin")
-        flag = o2.slider(
-            "Flag a square at (% failing)", 1, 100, 25, 1, key="hs_flag",
-            help="A square is drawn red once at least this share of the "
-                 "fixes inside it fail. Lower it to catch small pockets, "
-                 "raise it to show only places that are bad throughout.")
-    dim = o3.checkbox("Dim satellite", value=True, key="hs_dim")
+    bin_m, flag, dim = 25, 25, True
 
     metric = {"Valid / invalid": "valid", "HDOP only": "hdop",
               "SNR only": "snr"}[show]
@@ -2879,7 +2846,7 @@ def render_hdop_snr_view(df):
             f'limit ({op} {limit:g}) · {pct_over:.1f}% of fixes</span></div>')
     st.caption(
         ("Each dot is one fix. " if route else
-         f"A square turns red once {flag}% of its fixes fail. ")
+         "A square turns red where a quarter or more of its fixes fail. ")
         + "Use the layer box on the map to show the red layer on its own. "
           "The tables below follow the scope chosen above.")
 
@@ -3204,11 +3171,14 @@ with left:
                 help="Compare fleets — e.g. show only Onomondo tags. The "
                      "tag list below narrows to match.")
         st.markdown("**Tags**")
+        _all_picked = set(sel_tags) == set(avail_tags)
+        _tv = st.session_state.get("tags_ver", 0)
         picked = st.multiselect(
-            "Tags", avail_tags, default=sel_tags,
-            label_visibility="collapsed",
-            help="Select as many tags as you want — the map only redraws "
-                 "when you hit Apply.",
+            "Tags", avail_tags, default=[] if _all_picked else sel_tags,
+            key=f"tags_pick_{_tv}",
+            label_visibility="collapsed", placeholder="All tags selected",
+            help="Leave empty for all tags, or pick the ones you want — the "
+                 "map only redraws when you hit Apply.",
         )
         fa, fb = st.columns(2)
         applied = fa.form_submit_button("Apply filters", type="primary",
@@ -3217,6 +3187,7 @@ with left:
                                       use_container_width=True)
 
     if reset:
+        st.session_state["tags_ver"] = _tv + 1
         st.session_state["sel_tags"] = all_tags
         if HAS_SIM:
             st.session_state["sel_sims"] = all_sims
@@ -3231,6 +3202,7 @@ with left:
                 df.loc[df["sim_provider"].isin(new_sims), "tag"]
                 .dropna().unique())
             if sims_changed:
+                st.session_state["tags_ver"] = _tv + 1
                 st.session_state["sel_tags"] = new_avail
                 st.rerun()
             st.session_state["sel_tags"] = [t for t in (picked or new_avail)
@@ -3721,35 +3693,39 @@ def render_suggestions(fdf, col, noun, max_s):
 
 
 def render_drilldown(fdf, col, noun):
-    st.caption("Pick as many holes, zones or tags as you like. Beta — the "
-               "numbers are solid, the layout may change.")
-    c1, c2, c3 = st.columns([1, 2.2, 1])
-    by = c1.selectbox("Drill into", ["Hole", "Zone", "Tag"], key="dd_by")
+    with st.container(border=True):
+        st.markdown(
+            '<div class="sd-detail"><span class="sd-detail-chip">Detailed '
+            'view</span><span class="sd-detail-note">Pick as many holes, '
+            'zones or tags as you like. The other tabs show everything.'
+            '</span></div>', unsafe_allow_html=True)
+        c1, c2, c3 = st.columns([1, 2.2, 1])
+        by = c1.selectbox("Drill into", ["Hole", "Zone", "Tag"], key="dd_by")
 
-    if by == "Hole":
-        opts = [int(h) for h in sorted(fdf["hole"].dropna().unique())]
-        if not opts:
-            st.info("No hole information in these fixes.")
-            return
-        pick = c2.multiselect("Holes", opts, default=opts[:1], key="dd_hole")
-        sub = fdf[fdf["hole"].isin(pick)]
-        title = (f"Hole {pick[0]}" if len(pick) == 1
-                 else "Holes " + ", ".join(str(p) for p in pick))
-    elif by == "Zone":
-        opts = zone_order(fdf["location"].dropna().unique())
-        pick = c2.multiselect("Zones", opts, default=opts[:1], key="dd_zone")
-        sub = fdf[fdf["location"].isin(pick)]
-        title = (", ".join(str(p) for p in pick) if len(pick) <= 3
-                 else f"{len(pick)} zones")
-    else:
-        opts = sort_tags(fdf["tag"].dropna().unique())
-        pick = c2.multiselect("Tags", opts, default=opts[:1], key="dd_tag")
-        sub = fdf[fdf["tag"].isin(pick)]
-        title = (f"Tag {pick[0]}" if len(pick) == 1
-                 else "Tags " + ", ".join(str(p) for p in pick))
+        if by == "Hole":
+            opts = [int(h) for h in sorted(fdf["hole"].dropna().unique())]
+            if not opts:
+                st.info("No hole information in these fixes.")
+                return
+            pick = c2.multiselect("Holes", opts, default=opts[:1], key="dd_hole")
+            sub = fdf[fdf["hole"].isin(pick)]
+            title = (f"Hole {pick[0]}" if len(pick) == 1
+                     else "Holes " + ", ".join(str(p) for p in pick))
+        elif by == "Zone":
+            opts = zone_order(fdf["location"].dropna().unique())
+            pick = c2.multiselect("Zones", opts, default=opts[:1], key="dd_zone")
+            sub = fdf[fdf["location"].isin(pick)]
+            title = (", ".join(str(p) for p in pick) if len(pick) <= 3
+                     else f"{len(pick)} zones")
+        else:
+            opts = sort_tags(fdf["tag"].dropna().unique())
+            pick = c2.multiselect("Tags", opts, default=opts[:1], key="dd_tag")
+            sub = fdf[fdf["tag"].isin(pick)]
+            title = (f"Tag {pick[0]}" if len(pick) == 1
+                     else "Tags " + ", ".join(str(p) for p in pick))
 
-    only_bad = c3.checkbox(f"Only over {MAX_S:.0f}s", value=False,
-                           key="dd_bad")
+        only_bad = c3.checkbox(f"Only over {MAX_S:.0f}s", value=False,
+                               key="dd_bad")
     if not pick:
         st.info("Choose at least one to begin.")
         return
@@ -3759,18 +3735,11 @@ def render_drilldown(fdf, col, noun):
         return
 
     s = view[col].dropna()
-    rest = fdf[~fdf.index.isin(sub.index)][col].dropna()
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("Fixes", f"{len(view):,}")
     k2.metric(f"Median {noun}", f"{num(s.median()):.0f}s")
     k3.metric(f"Within {MAX_S:.0f}s", fmt_pct(health_pct(s)))
-    delta = None
-    if len(rest):
-        gap = 100 * (s > OK_S).mean() - 100 * (rest > OK_S).mean()
-        delta = f"{gap:+.1f} pp vs rest"
-    k4.metric(f"Over {OK_S:.0f}s", fmt_pct(100 * (s > OK_S).mean()),
-              delta=delta, delta_color="inverse",
-              help="Compared with everywhere else in the current filter.")
+    k4.metric(f"Over {OK_S:.0f}s", fmt_pct(100 * (s > OK_S).mean()))
 
     st.markdown(f"**{title} — how the {noun} is spread**")
     bins = [0, 1, 2, 5, 10, 30, 60, 120, 300, float("inf")]
@@ -4044,13 +4013,7 @@ def _view_distribution():
         st.altair_chart((bars + text).properties(height=320),
                         use_container_width=True)
 
-        q = d.quantile([0.5, 0.75, 0.9, 0.95, 0.99]).round(1)
-        q.index = ["50th (median)", "75th", "90th", "95th", "99th"]
-        qq1, qq2 = st.columns([1, 2])
-        q = q.rename("Delay (s)")
-        q.index.name = "Percentile"
-        qq1.dataframe(q, use_container_width=True)
-        qq2.dataframe(
+        st.dataframe(
             dist.set_index("band").rename(
                 columns={"fixes": "Fixes", "share": "Share %",
                          "grade": "Grade"}).rename_axis("Delay band"),
@@ -4222,7 +4185,6 @@ def _view_hole():
         hole_tbl = (hs.groupby("hole")
                     .agg(fixes=("fix_id", "count"),
                          median_val=(metric_col, "median"),
-                         p95_val=(metric_col, lambda s: s.quantile(0.95)),
                          max_val=(metric_col, "max"),
                          max_gap_s=("interval_s", "max"),
                          health_pct=(metric_col, health_pct),
@@ -4252,7 +4214,7 @@ def _view_hole():
              "(holes in playing order)") if FOCUSED else
             (f"**Percentage of fixes arriving later than {OK_S:.0f}s, "
              "hole by hole** (holes in playing order)"))
-        cols = ["Hole", y_col, "fixes", "p95_val"]
+        cols = ["Hole", y_col, "fixes"]
         if FOCUSED:
             cols.insert(2, "focus_fixes")
         st.altair_chart(
@@ -4272,7 +4234,6 @@ def _view_location():
            .groupby("location")
            .agg(fixes=("fix_id", "count"),
                 median_val=(metric_col, "median"),
-                p95_val=(metric_col, lambda s: s.quantile(0.95)),
                 max_val=(metric_col, "max"),
                 health_pct=(metric_col, health_pct),
                 within_ok_pct=(metric_col, within_ok),
@@ -4318,7 +4279,6 @@ def _view_round():
                 end=("recorded", "max"),
                 fixes=("fix_id", "count"),
                 median_val=(metric_col, "median"),
-                p95_val=(metric_col, lambda s: s.quantile(0.95)),
                 max_val=(metric_col, "max"),
                 max_gap_s=("interval_s", "max"),
                 health_pct=(metric_col, health_pct),
@@ -4371,7 +4331,6 @@ def _view_device():
            .agg(rounds=("round_id", "nunique"),
                 fixes=("fix_id", "count"),
                 median_val=(metric_col, "median"),
-                p95_val=(metric_col, lambda s: s.quantile(0.95)),
                 max_val=(metric_col, "max"),
                 max_gap_s=("interval_s", "max"),
                 health_pct=(metric_col, health_pct),
@@ -4431,7 +4390,6 @@ def _view_sim():
                 rounds=("round_id", "nunique"),
                 fixes=("fix_id", "count"),
                 median_val=(metric_col, "median"),
-                p95_val=(metric_col, lambda s: s.quantile(0.95)),
                 max_val=(metric_col, "max"),
                 health_pct=(metric_col, health_pct),
                 within_ok_pct=(metric_col, within_ok),
@@ -4492,7 +4450,6 @@ def _view_timeofday():
         by_hr = (hrs.groupby("hour")
                  .agg(fixes=("fix_id", "count"),
                       median_val=(metric_col, "median"),
-                      p95_val=(metric_col, lambda s: s.quantile(0.95)),
                       pct_delayed=(metric_col, delayed_rate))
                  .round(1))
         if FOCUSED:
@@ -4513,7 +4470,7 @@ def _view_timeofday():
              "climbs through the day points at network congestion rather "
              "than course geography"))
         hcols = (["hour_lbl", h_y, "focus_fixes", "hour_fixes"] if FOCUSED
-                 else ["hour_lbl", h_y, "fixes", "p95_val"])
+                 else ["hour_lbl", h_y, "fixes"])
         st.altair_chart(
             bar_labeled(by_hr[hcols], "hour_lbl", h_y, x_title="Hour",
                         y_title=(f"% in {focus_label}" if FOCUSED
@@ -4574,13 +4531,7 @@ _t = st.tabs(["Drill down", "Delay bands", "Hole", "Tag", "Zone",
               "Time of day", "By round", "More"])
 
 with _t[0]:
-    with st.container(border=True):
-        st.markdown(
-            '<div class="sd-detail"><span class="sd-detail-chip">Detailed '
-            'view</span><span class="sd-detail-note">Narrow to specific '
-            'holes, zones or tags. The other tabs show everything.</span>'
-            '</div>', unsafe_allow_html=True)
-        render_drilldown(adf, metric_col, NOUN)
+    render_drilldown(adf, metric_col, NOUN)
 with _t[1]:
     _view_distribution()
 with _t[2]:
@@ -4663,12 +4614,11 @@ with st.expander("Export for a client"):
         with pd.ExcelWriter(buf, engine="openpyxl") as xl:
             pd.DataFrame({
                 "Measure": ["Coverage health", f"Within {OK_S:.0f}s",
-                            f"Median {NOUN}", "95th percentile",
+                            f"Median {NOUN}",
                             f"Worst {NOUN}", "Fixes", "Rounds"],
                 "Value": [fmt_pct(health_pct(fdf[metric_col])),
                           fmt_pct(within_ok(fdf[metric_col])),
                           f"{num(fdf[metric_col].median()):.0f}s",
-                          f"{num(fdf[metric_col].quantile(0.95)):.0f}s",
                           fmt_dur(fdf[metric_col].max()),
                           f"{len(fdf):,}",
                           f"{fdf['round_id'].nunique():,}"],
@@ -4678,7 +4628,6 @@ with st.expander("Export for a client"):
                       .groupby("hole", observed=True)
                       .agg(fixes=(metric_col, "count"),
                            median_val=(metric_col, "median"),
-                           p95_val=(metric_col, lambda s: s.quantile(0.95)),
                            health_pct=(metric_col, health_pct)).round(1))
                 _h.index = _h.index.astype(int)
                 _h.sort_index().rename(columns=col_label).to_excel(
@@ -4686,7 +4635,6 @@ with st.expander("Export for a client"):
             _z = (fdf.groupby("location", observed=True)
                   .agg(fixes=(metric_col, "count"),
                        median_val=(metric_col, "median"),
-                       p95_val=(metric_col, lambda s: s.quantile(0.95)),
                        health_pct=(metric_col, health_pct))
                   .sort_values("health_pct").head(15).round(1))
             _z.rename(columns=col_label).to_excel(xl,
@@ -4694,7 +4642,6 @@ with st.expander("Export for a client"):
             _tg = (fdf.groupby("tag", observed=True)
                    .agg(fixes=(metric_col, "count"),
                         median_val=(metric_col, "median"),
-                        p95_val=(metric_col, lambda s: s.quantile(0.95)),
                         health_pct=(metric_col, health_pct)).round(1))
             _tg.reindex(sort_tags(_tg.index)).rename(
                 columns=col_label).to_excel(xl, sheet_name="By tag")

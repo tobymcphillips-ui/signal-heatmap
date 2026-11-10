@@ -10,6 +10,32 @@ Buffered fixes views, the drill-down and "where to look" suggestion
 tabs, and client export; v4.0 introduced the landing-page-into-sidebar
 flow. From here on, changes are logged properly.
 
+## v5.9
+
+**Changed**
+- **Drill down**: the box now holds only the selector (Drill into, Holes,
+  Only over), with the *Detailed view* label. The figures, chart and tables
+  sit below it, outside the box.
+- **Tags**: when every tag is selected the box says *All tags selected*
+  instead of listing each one. Pick some and press Apply filters to narrow
+  it; Show all puts it back. (Leaving it empty means all tags.) The selector
+  is rebuilt on Show all, otherwise it kept showing the old chips.
+- **HDOP / SNR**: the Suggested HDOP and Suggested SNR cards sit side by
+  side with **Test suggested** underneath them, full width, then the results
+  below. Test suggested sets the **Fix** limits to the suggestions and the
+  **Geo** limits a step tighter (HDOP 0.1 lower, SNR 1 higher, never below
+  0). It no longer depends on the *Against* choice.
+
+**Removed**
+- Everything percentile: the Percentile table in Delay bands, the "95th pct"
+  columns in the hole, tag, zone, hour, round, SIM and accuracy tables, the
+  "95th percentile" card on the Accuracy view, the 95th-percentile rows in
+  the Excel workbook, and the 3% wording on the HDOP page.
+- The "+x pp vs rest" chip on the Drill down figures.
+- The **Dim satellite** toggle on every map (the imagery is always dimmed).
+- On the HDOP/SNR page, the **Grid size** and **Flag a square at (% failing)**
+  sliders (fixed at 25 m and a quarter of the fixes).
+
 ## v5.8
 
 **Design**

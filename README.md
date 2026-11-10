@@ -81,13 +81,17 @@ produce by accident. See `CHANGELOG.md` (v4.2).
 
 ## Theme
 
-`.streamlit/config.toml` has `[theme.light]` and `[theme.dark]` sections, so
-Streamlit's own widgets and table grids follow the browser's light/dark
-setting. `app.py` has a matching palette for the panels and maps it draws
-itself. Keep the two in step, and do not pin `base` in the config:
-Streamlit would then ignore the browser while the app still followed it,
-which is how white cards once ended up on a dark page. Needs Streamlit
-1.52 or later.
+Dark only. `.streamlit/config.toml` pins the dark base and the instrument
+palette, and `app.py` has the matching palette for the panels and maps it
+draws itself; keep the two in step.
+
+## Course-only maps
+
+`course_footprint` bins every fix into a 20 m grid (dropping stray fixes
+and cells seen once), and `CourseMask` paints the page colour over the map
+except for circles of the chosen margin around those cells. The layer sits
+between the satellite tiles and the markers, so heat, markers and popups
+are unaffected. It is applied in every map builder through `mask_args()`.
 
 ## Changing the app
 

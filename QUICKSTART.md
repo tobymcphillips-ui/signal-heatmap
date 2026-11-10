@@ -19,8 +19,7 @@ themselves.
 
 ---
 
-The app follows your browser's light or dark setting — there is no switch
-inside it.
+The app is dark only.
 
 ## 1. Connect
 
@@ -165,6 +164,17 @@ either way.
 When you add a tower list, cells are matched in decimal, so the
 dashboard's hex IDs are converted first. A tower list whose IDs contain
 letters is treated as hex.
+
+## Map style: only the course
+
+Every map shows the satellite image only where your fixes are, and fills
+everything else with the page's dark colour, like the dashboard map. The
+area is worked out from **all** the loaded fixes, so it stays the same
+whatever you filter or select. In the sidebar, **Map style** has two
+controls: *Show only the course* (untick it to see the whole satellite
+map again) and *Course margin (m)*, how far around the fixes the image
+is kept. Raise the margin if parts of the course are cut off. Stray
+fixes far from the course are ignored when the area is drawn.
 
 ## Reading the results
 

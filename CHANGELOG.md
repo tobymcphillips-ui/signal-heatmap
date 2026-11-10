@@ -10,6 +10,32 @@ Buffered fixes views, the drill-down and "where to look" suggestion
 tabs, and client export; v4.0 introduced the landing-page-into-sidebar
 flow. From here on, changes are logged properly.
 
+## v5.3
+
+**Added**
+- Course-only maps. Every map now shows the satellite image only where
+  the fixes are and fills the rest with the page's dark colour, like the
+  dashboard map. The area comes from all the loaded fixes (so it does not
+  change with filters), ignores stray fixes, and sits under the markers
+  and heat layer. New sidebar panel *Map style*: *Show only the course*
+  (on by default) and *Course margin (m)* (default 70). Also applies to
+  the maps in the client report.
+
+**Changed**
+- Dark only. The light palette, the browser-theme detection and the
+  Appearance switch are removed, and `config.toml` pins the dark theme as
+  in v4.6 (so Streamlit 1.36 is enough again).
+
+## v5.2
+
+**Restored**
+- The Appearance (Auto / Dark / Light) switch in the sidebar, exactly as
+  in v4.6. It was the only visible difference between v5.0 and the v4.6
+  look: a pixel comparison of the two in a dark browser matches
+  everywhere else. Auto follows the browser. Forcing the opposite theme
+  restyles the app's panels, charts and maps, but Streamlit's own table
+  grids keep following the browser.
+
 ## v5.0
 
 **Fixed**

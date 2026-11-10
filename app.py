@@ -13,10 +13,12 @@ import requests
 import streamlit as st
 import altair as alt
 import folium
+from branca.element import MacroElement
 from folium.plugins import HeatMap
+from jinja2 import Template
 import streamlit.components.v1 as components
 
-APP_VERSION = "v5.0"
+APP_VERSION = "v5.3"
 
 _HAS_DATA = st.session_state.get("df") is not None
 
@@ -50,55 +52,24 @@ def _check_password() -> bool:
 if not _check_password():
     st.stop()
 
-def _browser_theme() -> str:
-    try:
-        t = getattr(st.context, "theme", None)
-        val = getattr(t, "type", None) or (t or {}).get("type")
-        if str(val).lower() in ("light", "dark"):
-            return str(val).lower()
-    except Exception:
-        pass
-    return "dark"
+THEME = "dark"
+LIGHT = False
 
-
-THEME = _browser_theme()
-LIGHT = THEME == "light"
-
-if LIGHT:
-    C_BG = "#F7F9FB"
-    C_SURFACE = "#FFFFFF"
-    C_LINE = "#D8E0E8"
-    C_TEXT = "#101A22"
-    C_MUTED = "#5A6B7A"
-    C_ACCENT = "#0B6E8F"
-    C_CASING = "#FFFFFF"
-    TILE_FILTER = "brightness(1.02) saturate(0.85)"
-else:
-    C_BG = "#0B1016"
-    C_SURFACE = "#121A22"
-    C_LINE = "#22303D"
-    C_TEXT = "#DCE6EE"
-    C_MUTED = "#7C8B99"
-    C_ACCENT = "#4CC9F0"
-    C_CASING = "#08131B"
-    TILE_FILTER = "brightness(0.45) saturate(0.55)"
-
-if LIGHT:
-    C_OK = "#0F766E"
-    C_GOOD = "#15803D"
-    C_WARN = "#B45309"
-    C_HIGH = "#C2410C"
-    C_BAD = "#BE123C"
-    C_EXTREME = "#7E22CE"
-else:
-    C_OK = "#2DD4BF"
-    C_GOOD = "#34D399"
-    C_WARN = "#FBBF24"
-    C_HIGH = "#FB923C"
-    C_BAD = "#FB7185"
-    C_EXTREME = "#C084FC"
-
-C_ON_ACCENT = "#FFFFFF" if LIGHT else "#06131A"
+C_BG = "#0B1016"
+C_SURFACE = "#121A22"
+C_LINE = "#22303D"
+C_TEXT = "#DCE6EE"
+C_MUTED = "#7C8B99"
+C_ACCENT = "#4CC9F0"
+C_CASING = "#08131B"
+TILE_FILTER = "brightness(0.45) saturate(0.55)"
+C_OK = "#2DD4BF"
+C_GOOD = "#34D399"
+C_WARN = "#FBBF24"
+C_HIGH = "#FB923C"
+C_BAD = "#FB7185"
+C_EXTREME = "#C084FC"
+C_ON_ACCENT = "#06131A"
 TM_GREEN, TM_YELLOW, TM_ORANGE, TM_RED = C_GOOD, C_WARN, C_HIGH, C_BAD
 TM_GRAY = C_MUTED
 
@@ -549,6 +520,17 @@ with _target:
                           use_container_width=True)
 
     if not _landing:
+        with st.expander("Map style"):
+            st.checkbox("Show only the course", value=True, key="course_only",
+                        help="Paints everything outside the area your fixes "
+                             "cover the same dark colour as the page, like "
+                             "the dashboard map.")
+            st.slider("Course margin (m)", 30, 250, 70, 10,
+                      key="course_margin",
+                      help="How far around the fixes the satellite image is "
+                           "kept. Raise it if parts of the course are cut "
+                           "off.")
+
         with st.expander("Saved data"):
             st.caption(
                 "Rounds you have already fetched are kept on this machine "
@@ -1055,6 +1037,102 @@ def show_table(data, **kw):
     return st.dataframe(d, **kw)
 
 
+@st.cache_data(show_spinner=False, max_entries=4)
+def course_footprint(lat, lon, cell_m=20, min_fixes=2):
+    a = np.asarray(lat, dtype=float)
+    b = np.asarray(lon, dtype=float)
+    ok = np.isfinite(a) & np.isfinite(b) & ~((a == 0) & (b == 0))
+    a, b = a[ok], b[ok]
+    if len(a) == 0:
+        return ()
+    mlat, mlon = float(np.median(a)), float(np.median(b))
+    near = (np.abs(a - mlat) < 0.06) & (np.abs(b - mlon) < 0.08)
+    a, b = a[near], b[near]
+    if len(a) == 0:
+        return ()
+    dlat = cell_m / 111_320.0
+    dlon = cell_m / (111_320.0 * max(math.cos(math.radians(mlat)), 0.01))
+    ia = np.round(a / dlat).astype(np.int64)
+    ib = np.round(b / dlon).astype(np.int64)
+    cells, counts = np.unique(np.stack([ia, ib], axis=1), axis=0,
+                              return_counts=True)
+    keep = counts >= min_fixes
+    if int(keep.sum()) < 20:
+        keep[:] = True
+    cells = cells[keep]
+    return tuple((round(float(x) * dlat, 5), round(float(y) * dlon, 5))
+                 for x, y in cells)
+
+
+class CourseMask(MacroElement):
+    _template = Template("""
+        {% macro script(this, kwargs) %}
+        (function () {
+            var map = {{ this._parent.get_name() }};
+            var pts = {{ this.pts }};
+            var radius = {{ this.radius }};
+            var fill = "{{ this.fill }}";
+            var pane = map.createPane("courseMask");
+            pane.style.zIndex = 350;
+            pane.style.pointerEvents = "none";
+            var canvas = document.createElement("canvas");
+            canvas.style.position = "absolute";
+            pane.appendChild(canvas);
+            function redraw() {
+                var size = map.getSize();
+                var dpr = window.devicePixelRatio || 1;
+                canvas.width = size.x * dpr;
+                canvas.height = size.y * dpr;
+                canvas.style.width = size.x + "px";
+                canvas.style.height = size.y + "px";
+                L.DomUtil.setPosition(canvas, map.containerPointToLayerPoint([0, 0]));
+                var ctx = canvas.getContext("2d");
+                ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+                ctx.globalCompositeOperation = "source-over";
+                ctx.fillStyle = fill;
+                ctx.fillRect(0, 0, size.x, size.y);
+                ctx.globalCompositeOperation = "destination-out";
+                var lat = map.getCenter().lat;
+                var mpp = 156543.03392 * Math.cos(lat * Math.PI / 180) / Math.pow(2, map.getZoom());
+                var r = radius / mpp;
+                ctx.beginPath();
+                for (var i = 0; i < pts.length; i++) {
+                    var p = map.latLngToContainerPoint([pts[i][0], pts[i][1]]);
+                    if (p.x < -r || p.y < -r || p.x > size.x + r || p.y > size.y + r) { continue; }
+                    ctx.moveTo(p.x + r, p.y);
+                    ctx.arc(p.x, p.y, r, 0, 6.2832);
+                }
+                ctx.fill();
+            }
+            map.on("move zoom viewreset resize zoomend moveend", redraw);
+            redraw();
+        })();
+        {% endmacro %}
+    """)
+
+    def __init__(self, pts, radius_m, fill):
+        super().__init__()
+        self._name = "CourseMask"
+        self.pts = json.dumps([list(p) for p in pts])
+        self.radius = float(radius_m)
+        self.fill = fill
+
+
+def add_course_mask(m, footprint, mask_m, mask_fill):
+    if footprint and mask_m > 0:
+        m.add_child(CourseMask(footprint, mask_m, mask_fill))
+
+
+def mask_args():
+    d = st.session_state.get("df")
+    if d is None or not st.session_state.get("course_only", True):
+        return {"footprint": (), "mask_m": 0.0, "mask_fill": C_BG}
+    fp = course_footprint(d["lat"].to_numpy(), d["lon"].to_numpy())
+    return {"footprint": fp,
+            "mask_m": float(st.session_state.get("course_margin", 70)),
+            "mask_fill": C_BG}
+
+
 def hex_to_dec(v):
     if v is None:
         return None
@@ -1512,7 +1590,8 @@ def bin_key(lat, lon, metres):
 def build_category_map(pts, mode, colour_by, bin_m, show_handovers,
                        center_lat, center_lon, line_weight, palette,
                        dim_imagery, theme, casing, text_col, tile_filter,
-                       label_singular="change"):
+                       label_singular="change", footprint=(), mask_m=0.0,
+                       mask_fill="#0B1016"):
     m = folium.Map(location=[center_lat, center_lon], zoom_start=16,
                    max_zoom=20, tiles=None, control_scale=True)
     folium.TileLayer(
@@ -1623,6 +1702,7 @@ def build_category_map(pts, mode, colour_by, bin_m, show_handovers,
         for fg in groups.values():
             fg.add_to(m)
 
+    add_course_mask(m, footprint, mask_m, mask_fill)
     folium.LayerControl(collapsed=False).add_to(m)
     return m.get_root().render()
 
@@ -1762,7 +1842,8 @@ def render_network_view(df):
             num(sel["lat"].mean()), num(sel["lon"].mean()), line_weight,
             tuple(sorted(net_colours(
                 sel[colour_by].dropna().unique()).items())),
-            dim_imagery, THEME, C_CASING, C_TEXT, TILE_FILTER)
+            dim_imagery, THEME, C_CASING, C_TEXT, TILE_FILTER,
+            **mask_args())
     components.html(html, height=660, scrolling=False)
 
     cmap = net_colours(sel[colour_by].dropna().unique())
@@ -2133,7 +2214,7 @@ def render_buffered_view(df):
             sel[cols], mode, "delivery", bin_m, show_marks,
             num(sel["lat"].mean()), num(sel["lon"].mean()), line_weight,
             PAL, dim_imagery, THEME, C_CASING, C_TEXT, TILE_FILTER,
-            label_singular="switch")
+            label_singular="switch", **mask_args())
     components.html(html, height=660, scrolling=False)
 
     share = (sel["delivery"].value_counts(normalize=True) * 100).round(2)
@@ -2298,7 +2379,8 @@ def render_accuracy_view(df):
             exact, dim_imagery, float(a.quantile(0.05)),
             float(a.quantile(0.95)), THEME, C_TEXT, TILE_FILTER,
             ((0.00, C_OK), (0.25, C_GOOD), (0.50, C_WARN),
-             (0.75, C_HIGH), (1.00, C_BAD)))
+             (0.75, C_HIGH), (1.00, C_BAD)),
+            **mask_args())
     components.html(html, height=660, scrolling=False)
     st.caption(
         ("Corridor width is the true accuracy radius on the ground — it "
@@ -2348,7 +2430,8 @@ def render_accuracy_view(df):
 
 @st.cache_data(show_spinner=False, max_entries=12)
 def build_accuracy_map(pts, center_lat, center_lon, exact, dim_imagery,
-                       lo_m, hi_m, theme, text_col, tile_filter, ramp):
+                       lo_m, hi_m, theme, text_col, tile_filter, ramp,
+                       footprint=(), mask_m=0.0, mask_fill="#0B1016"):
     m = folium.Map(location=[center_lat, center_lon], zoom_start=16,
                    max_zoom=20, tiles=None, control_scale=True,
                    prefer_canvas=True)
@@ -2401,6 +2484,7 @@ def build_accuracy_map(pts, center_lat, center_lon, exact, dim_imagery,
 
     corridor.add_to(m)
     route.add_to(m)
+    add_course_mask(m, footprint, mask_m, mask_fill)
     folium.LayerControl(collapsed=False).add_to(m)
     return m.get_root().render()
 
@@ -2425,7 +2509,8 @@ def _heat(u: float) -> str:
 @st.cache_data(show_spinner=False, max_entries=12)
 def build_signal_map(pts, metric, route, flag_pct, center_lat, center_lon,
                      dim_imagery, casing, text_col, tile_filter,
-                     limit, lo, hi):
+                     limit, lo, hi, footprint=(), mask_m=0.0,
+                     mask_fill="#0B1016"):
     m = folium.Map(location=[center_lat, center_lon], zoom_start=16,
                    max_zoom=20, tiles=None, control_scale=True,
                    prefer_canvas=True)
@@ -2522,6 +2607,7 @@ def build_signal_map(pts, metric, route, flag_pct, center_lat, center_lon,
     route_fg.add_to(m)
     ok.add_to(m)
     over.add_to(m)
+    add_course_mask(m, footprint, mask_m, mask_fill)
     folium.LayerControl(collapsed=False).add_to(m)
     return m.get_root().render()
 
@@ -2750,7 +2836,8 @@ def render_hdop_snr_view(df):
         html = build_signal_map(
             pts[cols], metric, route, float(flag),
             num(pts["lat"].mean()), num(pts["lon"].mean()), dim, C_CASING,
-            C_TEXT, TILE_FILTER, float(limit), float(lo), float(hi))
+            C_TEXT, TILE_FILTER, float(limit), float(lo), float(hi),
+            **mask_args())
     components.html(html, height=660, scrolling=False)
 
     if metric == "valid":
@@ -3190,7 +3277,8 @@ def build_map_html(bad, ctx_pts, center_lat, center_lon, metric_col,
                    thresh,
                    spread, log_weight, radius, blur, intensity,
                    show_markers, n_markers, show_lines, theme, gradient,
-                   ctx_col, marker_col, good_col):
+                   ctx_col, marker_col, good_col, footprint=(), mask_m=0.0,
+                   mask_fill="#0B1016"):
     def _weight(v: float) -> float:
         return math.log1p(v) if log_weight else v
 
@@ -3293,6 +3381,7 @@ def build_map_html(bad, ctx_pts, center_lat, center_lon, metric_col,
                                     color=color, fill=True,
                                     fill_opacity=1).add_to(ln)
             ln.add_to(m)
+    add_course_mask(m, footprint, mask_m, mask_fill)
     folium.LayerControl(collapsed=False).add_to(m)
     return m.get_root().render()
 
@@ -3311,7 +3400,7 @@ with right:
             THEME,
             ((0.10, C_OK), (0.30, C_GOOD), (0.50, C_WARN),
              (0.68, C_HIGH), (0.84, C_BAD), (1.0, C_EXTREME)),
-            C_GOOD, C_BAD, C_HIGH)
+            C_GOOD, C_BAD, C_HIGH, **mask_args())
     components.html(_html, height=660, scrolling=False)
     MAP_HTML = _html
 
@@ -3755,7 +3844,7 @@ def render_drilldown(fdf, col, noun):
                     THEME,
                     ((0.10, C_OK), (0.30, C_GOOD), (0.50, C_WARN),
                      (0.68, C_HIGH), (0.84, C_BAD), (1.0, C_EXTREME)),
-                    C_GOOD, C_BAD, C_HIGH)
+                    C_GOOD, C_BAD, C_HIGH, **mask_args())
         except Exception:
             sel_map = globals().get("MAP_HTML", "")
 

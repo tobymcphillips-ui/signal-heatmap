@@ -10,6 +10,39 @@ Buffered fixes views, the drill-down and "where to look" suggestion
 tabs, and client export; v4.0 introduced the landing-page-into-sidebar
 flow. From here on, changes are logged properly.
 
+## v5.8
+
+**Design**
+- Back to the colours you know from v4.6: Streamlit's classic dark theme
+  (navy `#0E1117`, red `#FF4B4B` accents on its own widgets) with the app's
+  cyan only on its own panels and buttons. The theme is now spelled out in
+  `config.toml` and applied by the app if the config is missing or stale, so
+  it no longer depends on which Streamlit version the host runs (newer
+  versions default to a warm grey with a muted rose accent). The same guard
+  also clears any cyan left in a running server by v5.5.
+
+**HDOP / SNR**
+- *Median HDOP* and *Median SNR* are replaced by **Suggested HDOP** and
+  **Suggested SNR**. HDOP readings are sorted highest to lowest and SNR
+  lowest to highest; the suggestion is the value 3% of the way in, so about
+  3% of readings are cut off as outliers (the 300th of 10,000). A new
+  **Test suggested** button puts both values into the threshold chosen under
+  *Against*. Needs at least 30 readings.
+- The cards are now two rows of three so the labels fit.
+
+**Map and layout**
+- The delay map opens showing only the heatmap. *Show all fixes (context)*,
+  *Show worst fixes as clickable markers* and *Show outage lines* are in
+  Display options (all off by default).
+- The map is as tall as the settings column beside it, so the bottoms line
+  up, and it follows if the column grows (for example when Display options
+  is open).
+- Headline cards: Median diff, Fixes and Rounds removed (fixes and rounds
+  are in the banner). Five cards remain, in one row.
+- **By round** is its own tab, no longer inside *More*.
+- **Drill down** sits in a bordered box with a *Detailed view* label, to
+  show it is the filterable one.
+
 ## v5.7
 
 **Fixed**

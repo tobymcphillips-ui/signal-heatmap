@@ -81,20 +81,18 @@ produce by accident. See `CHANGELOG.md` (v4.2).
 
 ## Theme
 
-Dark only. `.streamlit/config.toml` just pins `base = "dark"`, so Streamlit's
-own widgets (radios, sliders, tags, tabs) use its dark palette and its
-accent colour, as they always have. The app's own panels, buttons and
-headings draw the cyan instrument palette from CSS in `app.py`. There is
-deliberately no custom colour in the config: setting one turns the native
-widgets cyan as well, which is not the v4.6 look.
+Dark only, in Streamlit's classic dark colours: navy page (`#0E1117`), red
+accent (`#FF4B4B`) on Streamlit's own widgets (radios, sliders, tags, tab
+underlines, form buttons). The app's own panels, buttons and headings draw
+the cyan instrument palette from CSS in `app.py`.
 
-`app.py` also carries a small one-time cleanup (`_undo_stale_theme_override`)
-for a server that ran v5.5. That version changed Streamlit's theme settings
-while running, and those live in the server process, so they survive swapping
-in newer files until the app is rebooted. If the cyan accent is still set and
-`config.toml` does not ask for it, the cleanup puts the theme options back to
-what the config file says (or the defaults) and reruns once. It does nothing
-on a clean server.
+The theme lives in two places that must agree: `.streamlit/config.toml`
+and `_APP_THEME` in `app.py` (a test checks they match). The second is a
+guard: if the config file is missing, stale, or the running server still
+carries theme settings from an earlier version, the app sets the theme
+itself through Streamlit's `st._config` and reruns once. It does nothing
+when the theme is already right, reruns at most once per session, and does
+nothing if a Streamlit version lacks the setting.
 
 ## Changing the app
 

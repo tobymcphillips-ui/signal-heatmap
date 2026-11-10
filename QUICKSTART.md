@@ -69,21 +69,26 @@ fixes. The whole page follows whichever you pick.
 
 ## 4. Read the figures
 
-The three "Within" cards are the same measurement at three marks — the
-share of fixes that arrived within 2, 5 and 120 seconds.
+The "Within" cards are the same measurement at three marks — the share of
+fixes that arrived within 2, 5 and 120 seconds.
 
 - **within 2s** — the target
 - **within 5s** — comfortable, no cause for concern
 - **within 120s** — the most worth tolerating; past this it is a real
   problem
 
-Alongside them: the median and worst value, how many fixes breached 120s,
-and the total fixes and rounds in view.
+Alongside them: the worst value and how many fixes breached 120s. The
+number of fixes and rounds is in the green banner above.
 
 ## 5. Read the map
 
 Warm colours mark slow fixes. Start with **Minimum delay to show** at
 120s so the healthy fixes drop away and only trouble is left.
+
+The map opens showing only the heatmap. Under **Display options** you can
+add **Show all fixes (context)**, **Show worst fixes as clickable
+markers** and **Show outage lines**. The map is always the same height as
+the settings column beside it, so the two end together.
 
 The lines run from the last good fix to the first delayed one — the
 stretch where the unit was silent. Units do not buffer by default, so a
@@ -92,8 +97,10 @@ the outage.
 
 ## 6. Narrow it down
 
-- **Drill down** — pick any set of holes, zones or tags and see everything
-  about them.
+- **Drill down** — the one detailed view. It sits in its own box: pick any
+  set of holes, zones or tags and see everything about them. The other
+  tabs always show everything.
+- **By round** — each round on its own.
 - **Where to look** (under *More*) — does it for you. It raises the
   cut-off until the problem stops covering the whole course, then names
   the zone or the unit responsible, with how far above normal it sits.
@@ -122,6 +129,14 @@ is the **Accuracy** tab beside it).
   (*invalid below*). They start at Fix HDOP 1.2 / SNR 18 and Geo HDOP 0.8 / SNR 21 —
   change them if your devices are configured differently. They are remembered
   while you move between views.
+- **Suggested HDOP** and **Suggested SNR** work out a limit from your own
+  data. Every HDOP reading is sorted from highest to lowest and the first 3%
+  (the outliers) are cut off; the suggested HDOP is the value where the cut
+  falls. SNR is the other way round: sorted from lowest to highest, with the
+  lowest 3% cut off. With 10,000 readings that is the 300th one. Press
+  **Test suggested** to put both values into the threshold chosen under
+  **Against** (Fix or Geo) and see what the map and the *Invalid* figures do.
+  The other threshold is left alone.
 - A fix is **invalid** when its HDOP is above the limit **or** its SNR is
   below it. A value sitting exactly on the limit passes. A fix that
   carried neither reading is left out rather than counted as good or bad.

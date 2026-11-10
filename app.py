@@ -16,7 +16,7 @@ import folium
 from folium.plugins import HeatMap
 import streamlit.components.v1 as components
 
-APP_VERSION = "v5.7"
+APP_VERSION = "v5.8"
 
 _HAS_DATA = st.session_state.get("df") is not None
 
@@ -27,42 +27,41 @@ st.set_page_config(
     initial_sidebar_state="expanded" if _HAS_DATA else "collapsed",
 )
 
-_STALE_ACCENT = "#4CC9F0"
+_APP_THEME = {
+    "base": "dark",
+    "primaryColor": "#FF4B4B",
+    "backgroundColor": "#0E1117",
+    "secondaryBackgroundColor": "#262730",
+    "textColor": "#FAFAFA",
+    "font": "sans serif",
+}
 
 
-def _undo_stale_theme_override():
+def _theme_missing():
     try:
-        cfg = st._config
-        if st.get_option("theme.primaryColor") != _STALE_ACCENT:
-            return False
-        try:
-            import tomllib
-            from pathlib import Path
-            path = Path(".streamlit") / "config.toml"
-            file_theme = (tomllib.loads(path.read_text()).get("theme", {})
-                          if path.exists() else {})
-        except Exception:
-            file_theme = {}
-        if file_theme.get("primaryColor") == _STALE_ACCENT:
-            return False
-        names = ["base", "primaryColor", "backgroundColor",
-                 "secondaryBackgroundColor", "textColor", "font"]
-        for name in names:
-            key = f"theme.{name}"
-            cfg.set_option(key, file_theme.get(
-                name, cfg._config_options_template[key].default_val))
-        for mode in ("light", "dark"):
-            for name in names[1:5]:
-                cfg.set_option(f"theme.{mode}.{name}",
-                               file_theme.get(mode, {}).get(name))
-        return True
+        return any(st.get_option(f"theme.{k}") != v
+                   for k, v in _APP_THEME.items())
     except Exception:
         return False
 
 
-if st.session_state.get("_theme_undone", 0) < 1 and _undo_stale_theme_override():
-    st.session_state["_theme_undone"] = 1
-    st.rerun()
+if _theme_missing() and st.session_state.get("_theme_reruns", 0) < 1:
+    st.session_state["_theme_reruns"] = 1
+    try:
+        for _k, _v in _APP_THEME.items():
+            st._config.set_option(f"theme.{_k}", _v)
+        for _mode in ("light", "dark"):
+            for _k in ("primaryColor", "backgroundColor",
+                       "secondaryBackgroundColor", "textColor"):
+                try:
+                    st._config.set_option(f"theme.{_mode}.{_k}",
+                                          _APP_THEME[_k])
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    else:
+        st.rerun()
 
 def _check_password() -> bool:
     try:
@@ -180,6 +179,11 @@ h1, h2, h3, h4, h5 {{
     letter-spacing: 0.08em;
     margin-left: 6px;
 }}
+.sd-detail {{ display: flex; align-items: center; gap: 12px; margin-bottom: 4px; flex-wrap: wrap; }}
+.sd-detail-chip {{ background: {C_ACCENT}; color: {C_ON_ACCENT}; font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; padding: 3px 10px; border-radius: 999px; }}
+.sd-detail-note {{ color: {C_MUTED}; font-size: 13px; }}
+[data-testid="stVerticalBlockBorderWrapper"]:has(.sd-detail),
+[data-testid="stVerticalBlock"]:not([data-testid="stVerticalBlockBorderWrapper"] [data-testid="stVerticalBlock"]):has(> [data-testid="stElementContainer"] .sd-detail) {{ border: 1px solid {C_ACCENT} !important; background: {C_SURFACE}; }}
 .sd-eyebrow {{
     font-family: 'IBM Plex Mono', monospace;
     font-size: 11px;
@@ -1064,6 +1068,36 @@ def show_table(data, **kw):
 def dark_seams(m):
     m.get_root().header.add_child(folium.Element(
         "<style>.leaflet-container { background: " + C_BG + "; }</style>"))
+
+
+_FLUSH_JS = """<script>
+(function () {
+  try {
+    var f = window.frameElement;
+    if (!f) { return; }
+    var row = f.closest('[data-testid="stHorizontalBlock"]');
+    if (!row) { return; }
+    var cols = row.querySelectorAll(':scope > [data-testid="stColumn"], :scope > [data-testid="column"]');
+    if (cols.length < 2) { return; }
+    var left = cols[0];
+    function fit() {
+      var h = Math.max(480, Math.round(left.getBoundingClientRect().bottom - f.getBoundingClientRect().top));
+      f.style.height = h + "px";
+      f.setAttribute("height", h);
+      for (var k in window) {
+        try { if (window[k] instanceof L.Map) { window[k].invalidateSize(); } } catch (e) {}
+      }
+    }
+    fit();
+    if (window.ResizeObserver) { new ResizeObserver(fit).observe(left); }
+    window.addEventListener("resize", fit);
+  } catch (e) {}
+})();
+</script>"""
+
+
+def _with_flush(html):
+    return html.replace("</body>", _FLUSH_JS + "</body>", 1)
 
 
 def hex_to_dec(v):
@@ -2603,6 +2637,31 @@ def _distribution_chart(series, title, lo, hi, fix_thr, geo_thr):
     return (bars + rules).properties(height=260)
 
 
+SUGGEST_CUT_PCT = 3.0
+
+
+def suggest_limits(hdop, snr, cut=SUGGEST_CUT_PCT):
+    def pick(series, ascending):
+        v = (pd.to_numeric(pd.Series(series), errors="coerce")
+             .dropna().to_numpy(dtype=float))
+        if len(v) < 30:
+            return None
+        v = np.sort(v)
+        if not ascending:
+            v = v[::-1]
+        return round(float(v[min(int(len(v) * cut / 100.0), len(v) - 1)]), 1)
+
+    return pick(hdop, False), pick(snr, True)
+
+
+def _apply_suggested(sug_hdop, sug_snr):
+    which = str(st.session_state.get("hs_which", "Fix threshold"))
+    k = "fix" if which.startswith("Fix") else "geo"
+    for key, val in ((f"thr_{k}_hdop", sug_hdop), (f"thr_{k}_snr", sug_snr)):
+        st.session_state[key] = float(val)
+        st.session_state["_" + key] = float(val)
+
+
 def render_hdop_snr_view(df):
     if "hdop" not in df.columns or "snr" not in df.columns:
         st.info("This dataset was loaded before HDOP and SNR were being "
@@ -2669,20 +2728,43 @@ def render_hdop_snr_view(df):
         v = s.median()
         return "—" if pd.isna(v) else f"{v:.{dp}f}"
 
-    k1, k2, k3, k4, k5 = st.columns(5)
-    k1.metric("Median HDOP", _med(d["hdop"]),
-              help="Lower is better — under 2 is good in the open.")
-    k2.metric("Median SNR", _med(d["snr"]),
-              help="Higher is better.")
-    k3.metric("Invalid vs Fix", fmt_pct(100 * d["fix_invalid"].mean()),
+    sug_h, sug_s = suggest_limits(d["hdop"], d["snr"])
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Suggested HDOP", "—" if sug_h is None else f"{sug_h:.1f}",
+              help=f"Sort every HDOP reading from highest to lowest and cut "
+                   f"off the first {SUGGEST_CUT_PCT:g}% — the outliers. "
+                   "This is the value where the cut falls: fixes with a "
+                   "higher HDOP would be invalid.")
+    k2.metric("Suggested SNR", "—" if sug_s is None else f"{sug_s:.1f}",
+              help=f"Sort every SNR reading from lowest to highest and cut "
+                   f"off the first {SUGGEST_CUT_PCT:g}% — the outliers. "
+                   "This is the value where the cut falls: fixes with a "
+                   "lower SNR would be invalid.")
+    with k3:
+        st.markdown('<div style="height:26px"></div>',
+                    unsafe_allow_html=True)
+        st.button("Test suggested", key="hs_test_suggested",
+                  on_click=_apply_suggested, args=(sug_h, sug_s),
+                  disabled=sug_h is None or sug_s is None,
+                  use_container_width=True,
+                  help="Sets the HDOP and SNR limits of the threshold chosen "
+                       "under Against to the suggested values, so you can "
+                       "see how the map changes.")
+    k4, k5, k6 = st.columns(3)
+    k4.metric("Invalid vs Fix", fmt_pct(100 * d["fix_invalid"].mean()),
               help=f"Fixes with HDOP above {fix_hdop:g} or SNR below "
                    f"{fix_snr:g}.")
-    k4.metric("Invalid vs Geo", fmt_pct(100 * d["geo_invalid"].mean()),
+    k5.metric("Invalid vs Geo", fmt_pct(100 * d["geo_invalid"].mean()),
               help=f"Fixes with HDOP above {geo_hdop:g} or SNR below "
                    f"{geo_snr:g}.")
-    k5.metric("Fixes with data", f"{len(d):,}",
+    k6.metric("Fixes with data", f"{len(d):,}",
               help=f"{100 * len(d) / max(len(df), 1):.0f}% of all fixes "
                    "carried an HDOP or SNR value. The rest are left out.")
+    _tgt = "fix" if str(st.session_state.get("hs_which", "Fix threshold")
+                        ).startswith("Fix") else "geo"
+    st.caption(f"Suggested limits cut off the most extreme "
+               f"{SUGGEST_CUT_PCT:g}% of readings at the bad end. "
+               f"**Test suggested** sets the {_tgt} threshold to them.")
 
     r1, r2 = st.columns(2)
     show = r1.radio("Show", ["Valid / invalid", "HDOP only", "SNR only"],
@@ -2994,12 +3076,7 @@ pct_ideal = 100.0 * (_d <= IDEAL_S).mean() if len(_d) else float("nan")
 
 
 _cards = {
-    f"Median {NOUN}": (f"{num(df[metric_col].median()):.0f}s",
-                       f"Half of all fixes were quicker than this. Target "
-                       f"is {IDEAL_S:.0f}s or under."),
     f"Worst {NOUN}": (fmt_dur(df[metric_col].max()), None),
-    "Fixes": (f"{len(df):,}", None),
-    "Rounds": (f"{df['round_id'].nunique():,}", None),
     f"Within {IDEAL_S:.0f}s": (
         fmt_pct(pct_ideal),
         f"Share of fixes that arrived within {IDEAL_S:.0f} seconds — the "
@@ -3017,14 +3094,9 @@ _cards = {
                            "Fixes that breached the maximum."),
 }
 _all = list(_cards)
-_row1, _row2 = _all[:4], _all[4:]
-for _col, _name in zip(st.columns(len(_row1)), _row1):
+for _col, _name in zip(st.columns(len(_all)), _all):
     _v, _h = _cards[_name]
     _col.metric(_name, _v, help=_h)
-if _row2:
-    for _col, _name in zip(st.columns(len(_row2)), _row2):
-        _v, _h = _cards[_name]
-        _col.metric(_name, _v, help=_h)
 
 st.divider()
 
@@ -3084,12 +3156,16 @@ with left:
             help="Boosts the colour of moderate problems so they don't wash "
                  "out next to the single worst outage.",
         )
+        show_ctx = st.checkbox(
+            "Show all fixes (context)", value=False,
+            help="Faint dots for every fix in the selected tags, behind "
+                 "the heatmap.")
         show_markers = st.checkbox("Show worst fixes as clickable markers",
-                                   value=True)
+                                   value=False)
         n_markers = st.slider("Number of worst-fix markers", 10, 200, 50)
         show_lines = st.checkbox(
             "Show outage lines (last good fix → delayed fix)",
-            value=True,
+            value=False,
             help="Draws a line from the last fix before the delay to the "
                  "first delayed fix — the path along which the device had "
                  "no signal. Line color shows severity.",
@@ -3204,7 +3280,7 @@ def build_map_html(bad, ctx_pts, center_lat, center_lon, metric_col,
                    thresh,
                    spread, log_weight, radius, blur, intensity,
                    show_markers, n_markers, show_lines, theme, gradient,
-                   ctx_col, marker_col, good_col):
+                   ctx_col, marker_col, good_col, show_ctx=None):
     def _weight(v: float) -> float:
         return math.log1p(v) if log_weight else v
 
@@ -3245,12 +3321,14 @@ def build_map_html(bad, ctx_pts, center_lat, center_lon, metric_col,
         max_zoom=20,
     ).add_to(m)
 
-    ctx = folium.FeatureGroup(name="All fixes (context)", show=False)
-    for _, r in ctx_pts.iterrows():
-        folium.CircleMarker([r["lat"], r["lon"]], radius=1, weight=0,
-                            fill=True, fill_opacity=0.25,
-                            fill_color=ctx_col).add_to(ctx)
-    ctx.add_to(m)
+    if show_ctx is not False:
+        ctx = folium.FeatureGroup(name="All fixes (context)",
+                                  show=bool(show_ctx))
+        for _, r in ctx_pts.iterrows():
+            folium.CircleMarker([r["lat"], r["lon"]], radius=1, weight=0,
+                                fill=True, fill_opacity=0.25,
+                                fill_color=ctx_col).add_to(ctx)
+        ctx.add_to(m)
 
     if heat_points:
         HeatMap(
@@ -3326,8 +3404,8 @@ with right:
             THEME,
             ((0.10, C_OK), (0.30, C_GOOD), (0.50, C_WARN),
              (0.68, C_HIGH), (0.84, C_BAD), (1.0, C_EXTREME)),
-            C_GOOD, C_BAD, C_HIGH)
-    components.html(_html, height=660, scrolling=False)
+            C_GOOD, C_BAD, C_HIGH, show_ctx=show_ctx)
+    components.html(_with_flush(_html), height=660, scrolling=False)
     MAP_HTML = _html
 
 st.divider()
@@ -4493,10 +4571,16 @@ def _view_gaps():
 
 
 _t = st.tabs(["Drill down", "Delay bands", "Hole", "Tag", "Zone",
-              "Time of day", "More"])
+              "Time of day", "By round", "More"])
 
 with _t[0]:
-    render_drilldown(adf, metric_col, NOUN)
+    with st.container(border=True):
+        st.markdown(
+            '<div class="sd-detail"><span class="sd-detail-chip">Detailed '
+            'view</span><span class="sd-detail-note">Narrow to specific '
+            'holes, zones or tags. The other tabs show everything.</span>'
+            '</div>', unsafe_allow_html=True)
+        render_drilldown(adf, metric_col, NOUN)
 with _t[1]:
     _view_distribution()
 with _t[2]:
@@ -4508,15 +4592,18 @@ with _t[4]:
 with _t[5]:
     _view_timeofday()
 with _t[6]:
-    _more = ["Timeline", "Where to look", "By round", "Gap log"]
+    _view_round()
+with _t[7]:
+    _more = ["Timeline", "Where to look", "Gap log"]
     if HAS_SIM:
-        _more.insert(3, "By SIM")
+        _more.insert(2, "By SIM")
+    if st.session_state.get("sub_more") not in _more:
+        st.session_state.pop("sub_more", None)
     _pick = st.radio("View", _more, horizontal=True,
                      label_visibility="collapsed", key="sub_more")
     {"Timeline": _view_timeline,
      "Where to look": lambda: render_suggestions(adf, metric_col, NOUN,
                                                  MAX_S),
-     "By round": _view_round,
      "By SIM": _view_sim,
      "Gap log": _view_gaps}[_pick]()
 

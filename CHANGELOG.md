@@ -10,6 +10,20 @@ Buffered fixes views, the drill-down and "where to look" suggestion
 tabs, and client export; v4.0 introduced the landing-page-into-sidebar
 flow. From here on, changes are logged properly.
 
+## v5.7
+
+**Fixed**
+- Everything still blue after v5.6. v5.5 changed Streamlit's theme
+  settings while the server was running. Those settings live in the server
+  process, not in a file, so on a host that swaps in new files without
+  restarting the server they stayed in force and v5.6 still showed cyan
+  tags, buttons and sliders (the page even said v5.6). Tested: v5.5 then
+  v5.6 on the same server stayed blue; only a full restart cleared it.
+  v5.7 detects the leftover cyan accent, restores the theme options from
+  `config.toml` (or the defaults) and reruns once. Rebooting the app does
+  the same.
+- If `config.toml` itself asks for the cyan accent, v5.7 leaves it alone.
+
 ## v5.6
 
 **Reverted**

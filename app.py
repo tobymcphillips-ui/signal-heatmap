@@ -16,7 +16,7 @@ import folium
 from folium.plugins import HeatMap
 import streamlit.components.v1 as components
 
-APP_VERSION = "v5.6"
+APP_VERSION = "v5.7"
 
 _HAS_DATA = st.session_state.get("df") is not None
 
@@ -26,6 +26,43 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded" if _HAS_DATA else "collapsed",
 )
+
+_STALE_ACCENT = "#4CC9F0"
+
+
+def _undo_stale_theme_override():
+    try:
+        cfg = st._config
+        if st.get_option("theme.primaryColor") != _STALE_ACCENT:
+            return False
+        try:
+            import tomllib
+            from pathlib import Path
+            path = Path(".streamlit") / "config.toml"
+            file_theme = (tomllib.loads(path.read_text()).get("theme", {})
+                          if path.exists() else {})
+        except Exception:
+            file_theme = {}
+        if file_theme.get("primaryColor") == _STALE_ACCENT:
+            return False
+        names = ["base", "primaryColor", "backgroundColor",
+                 "secondaryBackgroundColor", "textColor", "font"]
+        for name in names:
+            key = f"theme.{name}"
+            cfg.set_option(key, file_theme.get(
+                name, cfg._config_options_template[key].default_val))
+        for mode in ("light", "dark"):
+            for name in names[1:5]:
+                cfg.set_option(f"theme.{mode}.{name}",
+                               file_theme.get(mode, {}).get(name))
+        return True
+    except Exception:
+        return False
+
+
+if st.session_state.get("_theme_undone", 0) < 1 and _undo_stale_theme_override():
+    st.session_state["_theme_undone"] = 1
+    st.rerun()
 
 def _check_password() -> bool:
     try:

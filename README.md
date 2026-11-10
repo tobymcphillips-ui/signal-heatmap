@@ -88,6 +88,14 @@ headings draw the cyan instrument palette from CSS in `app.py`. There is
 deliberately no custom colour in the config: setting one turns the native
 widgets cyan as well, which is not the v4.6 look.
 
+`app.py` also carries a small one-time cleanup (`_undo_stale_theme_override`)
+for a server that ran v5.5. That version changed Streamlit's theme settings
+while running, and those live in the server process, so they survive swapping
+in newer files until the app is rebooted. If the cyan accent is still set and
+`config.toml` does not ask for it, the cleanup puts the theme options back to
+what the config file says (or the defaults) and reruns once. It does nothing
+on a clean server.
+
 ## Changing the app
 
 Several past bugs (a pandas dtype mismatch, a Markdown-parsing edge case)

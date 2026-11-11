@@ -16,7 +16,7 @@ import folium
 from folium.plugins import HeatMap
 import streamlit.components.v1 as components
 
-APP_VERSION = "v5.9"
+APP_VERSION = "v6.0"
 
 _HAS_DATA = st.session_state.get("df") is not None
 
@@ -179,11 +179,9 @@ h1, h2, h3, h4, h5 {{
     letter-spacing: 0.08em;
     margin-left: 6px;
 }}
-.sd-detail {{ display: flex; align-items: center; gap: 12px; margin-bottom: 4px; flex-wrap: wrap; }}
-.sd-detail-chip {{ background: {C_ACCENT}; color: {C_ON_ACCENT}; font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; padding: 3px 10px; border-radius: 999px; }}
-.sd-detail-note {{ color: {C_MUTED}; font-size: 13px; }}
-[data-testid="stVerticalBlockBorderWrapper"]:has(.sd-detail),
-[data-testid="stVerticalBlock"]:not([data-testid="stVerticalBlockBorderWrapper"] [data-testid="stVerticalBlock"]):has(> [data-testid="stElementContainer"] .sd-detail) {{ border: 1px solid {C_ACCENT} !important; background: {C_SURFACE}; }}
+[data-testid="stElementContainer"]:has(.sd-drill-marker) {{ display: none; }}
+[data-testid="stTabs"]:has(.sd-drill-marker) [role="tablist"]:not([data-testid="stTabPanel"] [role="tablist"]):not([role="tabpanel"] [role="tablist"]) > [role="tab"]:first-child {{ border: 1px solid {C_ACCENT}; border-radius: 8px 8px 0 0; background: rgba(76, 201, 240, 0.12); padding: 6px 16px; margin-right: 14px; }}
+[data-testid="stTabs"]:has(.sd-drill-marker) [role="tablist"]:not([data-testid="stTabPanel"] [role="tablist"]):not([role="tabpanel"] [role="tablist"]) > [role="tab"]:first-child p {{ color: {C_ACCENT} !important; font-weight: 600; }}
 .sd-eyebrow {{
     font-family: 'IBM Plex Mono', monospace;
     font-size: 11px;
@@ -2574,8 +2572,11 @@ def signal_flags(d: pd.DataFrame, hdop_max: float, snr_min: float):
 
 
 def _thr_input(label, key, default, **kw):
-    v = st.number_input(label, key=key, value=float(
-        st.session_state.get("_" + key, default)), **kw)
+    if key in st.session_state:
+        v = st.number_input(label, key=key, **kw)
+    else:
+        v = st.number_input(label, key=key, value=float(
+            st.session_state.get("_" + key, default)), **kw)
     st.session_state["_" + key] = float(v)
     return float(v)
 
@@ -2662,6 +2663,16 @@ def render_hdop_snr_view(df):
                "fixes. A fix must pass both tests to be valid — it is invalid "
                "when its HDOP is above the limit or its SNR is below it.")
 
+    sug_h, sug_s = suggest_limits(df["hdop"], df["snr"])
+    geo_h_sug = geo_s_sug = None
+    if sug_h is not None and sug_s is not None:
+        geo_h_sug = max(0.0, round(sug_h - 0.1, 1))
+        geo_s_sug = round(sug_s + 1.0, 1)
+        _fp = (len(df), sug_h, sug_s)
+        if st.session_state.get("_thr_auto_for") != _fp:
+            _apply_suggested(sug_h, sug_s)
+            st.session_state["_thr_auto_for"] = _fp
+
     with st.container(border=True):
         cf, cg = st.columns(2)
         with cf:
@@ -2686,8 +2697,25 @@ def render_hdop_snr_view(df):
                 geo_snr = _thr_input("SNR — invalid below", "thr_geo_snr",
                                      21.0, min_value=-200.0, max_value=200.0,
                                      step=1.0, format="%.1f")
-        st.caption("Start at Fix HDOP 1.2 / SNR 18 and Geo HDOP 0.8 / SNR 21 — "
-                   "change them if your devices are configured differently.")
+        if geo_h_sug is None:
+            st.caption("Not enough readings to work out limits, so these "
+                       "are the starting values — change them if your "
+                       "devices are configured differently.")
+        elif all(abs(a - b) < 1e-6 for a, b in zip(
+                (fix_hdop, fix_snr, geo_hdop, geo_snr),
+                (sug_h, sug_s, geo_h_sug, geo_s_sug))):
+            st.success(
+                "**Limits adjusted to the optimal settings for these "
+                f"fixes.** Fix: HDOP {sug_h:g} · SNR {sug_s:g}. "
+                f"Geo: HDOP {geo_h_sug:g} · SNR {geo_s_sug:g}. "
+                "Edit any box to change them.")
+        else:
+            st.caption(
+                "Limits changed from the optimal settings for these fixes "
+                f"(Fix HDOP {sug_h:g} · SNR {sug_s:g}, Geo HDOP "
+                f"{geo_h_sug:g} · SNR {geo_s_sug:g}).")
+            st.button("Use the optimal settings", key="hs_use_suggested",
+                      on_click=_apply_suggested, args=(sug_h, sug_s))
 
     has = df["hdop"].notna() | df["snr"].notna()
     if not has.any():
@@ -2717,30 +2745,17 @@ def render_hdop_snr_view(df):
         v = s.median()
         return "—" if pd.isna(v) else f"{v:.{dp}f}"
 
-    sug_h, sug_s = suggest_limits(d["hdop"], d["snr"])
-    k1, k2 = st.columns(2)
-    k1.metric("Suggested HDOP", "—" if sug_h is None else f"{sug_h:.1f}",
-              help="An HDOP limit that leaves out the worst readings. "
-                   "Fixes with a higher HDOP would be invalid.")
-    k2.metric("Suggested SNR", "—" if sug_s is None else f"{sug_s:.1f}",
-              help="An SNR limit that leaves out the weakest readings. "
-                   "Fixes with a lower SNR would be invalid.")
-    st.button("Test suggested", key="hs_test_suggested",
-              on_click=_apply_suggested, args=(sug_h, sug_s),
-              disabled=sug_h is None or sug_s is None,
-              use_container_width=True,
-              help="Sets the Fix limits to the suggested values and the Geo "
-                   "limits a little tighter: HDOP 0.1 lower, SNR 1 higher.")
-    k4, k5, k6 = st.columns(3)
+    k4, k5 = st.columns(2)
     k4.metric("Invalid vs Fix", fmt_pct(100 * d["fix_invalid"].mean()),
               help=f"Fixes with HDOP above {fix_hdop:g} or SNR below "
                    f"{fix_snr:g}.")
     k5.metric("Invalid vs Geo", fmt_pct(100 * d["geo_invalid"].mean()),
               help=f"Fixes with HDOP above {geo_hdop:g} or SNR below "
                    f"{geo_snr:g}.")
-    k6.metric("Fixes with data", f"{len(d):,}",
-              help=f"{100 * len(d) / max(len(df), 1):.0f}% of all fixes "
-                   "carried an HDOP or SNR value. The rest are left out.")
+    _cov = 100 * len(d) / max(len(df), 1)
+    if _cov < 99.5:
+        st.caption(f"{_cov:.0f}% of fixes carried an HDOP or SNR value; "
+                   "the rest are left out.")
 
     r1, r2 = st.columns(2)
     show = r1.radio("Show", ["Valid / invalid", "HDOP only", "SNR only"],
@@ -2850,8 +2865,15 @@ def render_hdop_snr_view(df):
         + "Use the layer box on the map to show the red layer on its own. "
           "The tables below follow the scope chosen above.")
 
-    ycol = f"{k}_invalid_pct"
-    ylab = f"% invalid vs {which.split()[0]}"
+    if show == "HDOP only":
+        ycol, ylab = "fail_hdop_pct", f"% over the {k.title()} HDOP limit"
+        what = f"over the {k} HDOP limit"
+    elif show == "SNR only":
+        ycol, ylab = "fail_snr_pct", f"% under the {k.title()} SNR limit"
+        what = f"under the {k} SNR limit"
+    else:
+        ycol, ylab = f"{k}_invalid_pct", f"% invalid vs {which.split()[0]}"
+        what = f"invalid against the {which.lower()}"
     t_hole, t_tag, t_zone, t_dist = st.tabs(
         ["Hole", "Tag", "Zone", "Distribution"])
 
@@ -2865,8 +2887,7 @@ def render_hdop_snr_view(df):
             th = th.sort_index()
             ch = th.reset_index()
             ch["Hole"] = ch["hole"].astype(str)
-            st.markdown(f"**Share of fixes invalid against the "
-                        f"{which.lower()}, hole by hole** "
+            st.markdown(f"**Share of fixes {what}, hole by hole** "
                         "(holes in playing order)")
             st.altair_chart(
                 bar_labeled(ch[["Hole", ycol, "fixes_with_data"]], "Hole",
@@ -2879,15 +2900,15 @@ def render_hdop_snr_view(df):
                 st.markdown("Worst holes: " + " · ".join(
                     f"**Hole {int(h)}** ({v:.1f}%)"
                     for h, v in worst.items()))
-            show_table(th.sort_values(ycol, ascending=False))
+            show_table(th)
 
     with t_tag:
         tt = _signal_table(sel, "tag", k).round(1)
         tt = tt.reindex(sort_tags(list(tt.index)))
         ct = tt.reset_index()
         ct["Tag"] = ct["tag"].astype(str)
-        st.markdown(f"**Share of each tag's fixes invalid against the "
-                    f"{which.lower()}** (tags in numeric order)")
+        st.markdown(f"**Share of each tag's fixes {what}** "
+                    "(tags in numeric order)")
         st.altair_chart(
             bar_labeled(ct[["Tag", ycol, "fixes_with_data"]], "Tag", ycol,
                         x_title="Tag", y_title=ylab, sort=list(ct["Tag"]),
@@ -2913,8 +2934,8 @@ def render_hdop_snr_view(df):
         rk = rk.sort_values(ycol, ascending=False).head(15)
         cz = rk.reset_index()
         cz["Zone"] = cz["location"].astype(str)
-        st.markdown(f"**Worst 15 zones by share of fixes invalid against "
-                    f"the {which.lower()}** (20+ fixes only)")
+        st.markdown(f"**Worst 15 zones by share of fixes {what}** "
+                    "(20+ fixes only)")
         st.altair_chart(
             bar_labeled(cz[["Zone", ycol, "fixes_with_data"]], "Zone", ycol,
                         x_title="", y_title=ylab, sort=list(cz["Zone"]),
@@ -3693,39 +3714,35 @@ def render_suggestions(fdf, col, noun, max_s):
 
 
 def render_drilldown(fdf, col, noun):
-    with st.container(border=True):
-        st.markdown(
-            '<div class="sd-detail"><span class="sd-detail-chip">Detailed '
-            'view</span><span class="sd-detail-note">Pick as many holes, '
-            'zones or tags as you like. The other tabs show everything.'
-            '</span></div>', unsafe_allow_html=True)
-        c1, c2, c3 = st.columns([1, 2.2, 1])
-        by = c1.selectbox("Drill into", ["Hole", "Zone", "Tag"], key="dd_by")
+    st.caption("Detailed view — pick as many holes, zones or tags as you "
+               "like. The other tabs show everything.")
+    c1, c2, c3 = st.columns([1, 2.2, 1])
+    by = c1.selectbox("Drill into", ["Hole", "Zone", "Tag"], key="dd_by")
 
-        if by == "Hole":
-            opts = [int(h) for h in sorted(fdf["hole"].dropna().unique())]
-            if not opts:
-                st.info("No hole information in these fixes.")
-                return
-            pick = c2.multiselect("Holes", opts, default=opts[:1], key="dd_hole")
-            sub = fdf[fdf["hole"].isin(pick)]
-            title = (f"Hole {pick[0]}" if len(pick) == 1
-                     else "Holes " + ", ".join(str(p) for p in pick))
-        elif by == "Zone":
-            opts = zone_order(fdf["location"].dropna().unique())
-            pick = c2.multiselect("Zones", opts, default=opts[:1], key="dd_zone")
-            sub = fdf[fdf["location"].isin(pick)]
-            title = (", ".join(str(p) for p in pick) if len(pick) <= 3
-                     else f"{len(pick)} zones")
-        else:
-            opts = sort_tags(fdf["tag"].dropna().unique())
-            pick = c2.multiselect("Tags", opts, default=opts[:1], key="dd_tag")
-            sub = fdf[fdf["tag"].isin(pick)]
-            title = (f"Tag {pick[0]}" if len(pick) == 1
-                     else "Tags " + ", ".join(str(p) for p in pick))
+    if by == "Hole":
+        opts = [int(h) for h in sorted(fdf["hole"].dropna().unique())]
+        if not opts:
+            st.info("No hole information in these fixes.")
+            return
+        pick = c2.multiselect("Holes", opts, default=opts[:1], key="dd_hole")
+        sub = fdf[fdf["hole"].isin(pick)]
+        title = (f"Hole {pick[0]}" if len(pick) == 1
+                 else "Holes " + ", ".join(str(p) for p in pick))
+    elif by == "Zone":
+        opts = zone_order(fdf["location"].dropna().unique())
+        pick = c2.multiselect("Zones", opts, default=opts[:1], key="dd_zone")
+        sub = fdf[fdf["location"].isin(pick)]
+        title = (", ".join(str(p) for p in pick) if len(pick) <= 3
+                 else f"{len(pick)} zones")
+    else:
+        opts = sort_tags(fdf["tag"].dropna().unique())
+        pick = c2.multiselect("Tags", opts, default=opts[:1], key="dd_tag")
+        sub = fdf[fdf["tag"].isin(pick)]
+        title = (f"Tag {pick[0]}" if len(pick) == 1
+                 else "Tags " + ", ".join(str(p) for p in pick))
 
-        only_bad = c3.checkbox(f"Only over {MAX_S:.0f}s", value=False,
-                               key="dd_bad")
+    only_bad = c3.checkbox(f"Only over {MAX_S:.0f}s", value=False,
+                           key="dd_bad")
     if not pick:
         st.info("Choose at least one to begin.")
         return
@@ -4531,6 +4548,8 @@ _t = st.tabs(["Drill down", "Delay bands", "Hole", "Tag", "Zone",
               "Time of day", "By round", "More"])
 
 with _t[0]:
+    st.markdown('<span class="sd-drill-marker"></span>',
+                unsafe_allow_html=True)
     render_drilldown(adf, metric_col, NOUN)
 with _t[1]:
     _view_distribution()

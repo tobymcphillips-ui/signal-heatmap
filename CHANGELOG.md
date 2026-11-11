@@ -10,6 +10,32 @@ Buffered fixes views, the drill-down and "where to look" suggestion
 tabs, and client export; v4.0 introduced the landing-page-into-sidebar
 flow. From here on, changes are logged properly.
 
+## v6.0
+
+**Changed**
+- **Drill down**: the *tab* is now the highlighted thing — boxed in the
+  accent colour in the tab row so it stands out as the detailed view. The
+  boxes I had put round its content (v5.8, v5.9) are gone; it keeps a
+  one-line caption. Sub-tabs and the other pages' tabs are untouched.
+- **HDOP / SNR**: the limits are now set for you. On first opening they
+  are worked out from your data (Fix = the optimal values, Geo = HDOP 0.1
+  lower and SNR 1 higher) and a green line says the limits were adjusted
+  to the optimal settings, with the values. If you edit a box the line
+  becomes a note with a *Use the optimal settings* button. Your edits are
+  kept across views and the optimal limits are only recomputed for new
+  data. With too few readings the starting values stay, with a note.
+- **HDOP / SNR**: the charts under the map follow *Show* — share invalid
+  (Valid / invalid), share over the HDOP limit (HDOP only), share under the
+  SNR limit (SNR only) — on the Hole, Tag and Zone tabs.
+- **HDOP / SNR**: the table under the Hole chart goes hole by hole in
+  playing order (it was worst-first), with all the detail.
+
+**Removed**
+- The Suggested HDOP and Suggested SNR cards and the Test suggested button
+  (now automatic), and the *Fixes with data* card (the green banner already
+  gives the count). If only some fixes carry HDOP/SNR, a one-line note says
+  how many.
+
 ## v5.9
 
 **Changed**

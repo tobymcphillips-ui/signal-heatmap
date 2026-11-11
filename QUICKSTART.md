@@ -101,9 +101,9 @@ The **Tags** box under the map settings says *All tags selected* until you
 pick some. Pick the tags you want and press **Apply filters**; **Show all**
 puts it back.
 
-- **Drill down** — the one detailed view. Its selector sits in a box: pick
-  any set of holes, zones or tags and see everything about them. The other
-  tabs always show everything.
+- **Drill down** — the one detailed view, which is why its tab is picked
+  out with a box. Pick any set of holes, zones or tags and see everything
+  about them. The other tabs always show everything.
 - **By round** — each round on its own.
 - **Where to look** (under *More*) — does it for you. It raises the
   cut-off until the problem stops covering the whole course, then names
@@ -130,15 +130,18 @@ is the **Accuracy** tab beside it).
   better. **SNR** is *Signal Strength* — higher is better.
 - There are two sets of limits: a **Fix threshold** and a **Geo
   threshold**. Each has an HDOP box (*invalid above*) and an SNR box
-  (*invalid below*). They start at Fix HDOP 1.2 / SNR 18 and Geo HDOP 0.8 / SNR 21 —
-  change them if your devices are configured differently. They are remembered
-  while you move between views.
-- **Suggested HDOP** and **Suggested SNR** work out limits from your own
-  data, leaving out the most extreme readings (the outliers). **Test
-  suggested**, underneath them, puts the suggestions into the **Fix**
-  threshold and sets the **Geo** threshold a little tighter — HDOP 0.1 lower
-  and SNR 1 higher — so you can see how the map and the *Invalid* figures
-  change. You can still edit any of the four boxes afterwards.
+  (*invalid below*).
+- **The limits are set for you.** When the page first opens it works the
+  limits out from your own data, leaving out the most extreme readings (the
+  outliers), and puts them in the **Fix** threshold. The **Geo** threshold
+  is set a little tighter — HDOP 0.1 lower, SNR 1 higher. A green line
+  under the boxes says so and shows the values.
+- Change any box if you want. The green line then becomes a note that the
+  limits differ from the optimal ones, with a **Use the optimal settings**
+  button to put them back. Your changes are kept while you move between
+  views, and the optimal limits are only worked out again when you load
+  new data. With too few readings to work them out, the starting values
+  (Fix HDOP 1.2 / SNR 18, Geo HDOP 0.8 / SNR 21) stay.
 - A fix is **invalid** when its HDOP is above the limit **or** its SNR is
   below it. A value sitting exactly on the limit passes. A fix that
   carried neither reading is left out rather than counted as good or bad.
@@ -156,9 +159,14 @@ is the **Accuracy** tab beside it).
     share of fixes over the limit.
   - **Against** picks whether the Fix or the Geo limits are used.
   - Use the layer box on the map to show the red layer on its own.
-- Below the map, **Hole**, **Tag**, **Zone** and **Distribution** work like
-  the delay diagnostics tabs; **Distribution** shows where the readings sit
-  against both limits, which helps when choosing them.
+- Below the map, the **Hole** tab opens first, with **Tag**, **Zone** and
+  **Distribution** beside it. The charts follow the **Show** choice: with
+  *Valid / invalid* they show the share of fixes that are invalid, with
+  *HDOP only* the share over the HDOP limit, and with *SNR only* the share
+  under the SNR limit. The table under the Hole chart goes hole by hole in
+  playing order, with all the detail (fixes, median and worst HDOP, median
+  and lowest SNR, and the share failing). **Distribution** shows where the
+  readings sit against both limits.
 - Readings are rounded to 1 decimal before they are compared, because the
   dashboard sends values like 0.6000000238418579 for 0.6 — without that, a
   limit of 0.6 would fail a reading of 0.6. Enter limits to 1 decimal.

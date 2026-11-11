@@ -68,6 +68,24 @@ never stores it; see SECURITY.md for the full picture.
   or SNR below its limit makes it invalid. The map shows valid/invalid in
   green/red, or HDOP-only / SNR-only as a colour scale with breaches in red.
 
+## Diagnose and Analysis
+
+Two views sit beside the original four. Both work on a prepared copy of the
+fixes (`prepare_diag`), which adds the speed between consecutive fixes and
+flags each network and cell change.
+
+- `issue_flags` marks each fix for seven issue types (delay, recording gap,
+  poor accuracy, HDOP / SNR, network change, buffered, GPS jump) using the
+  thresholds in the *What counts as an issue* expander.
+- `grid_stack` bins the fixes into squares and counts how many issue types
+  reach the presence threshold in each. This drives the issue stack and the
+  hotspot table.
+- `network_event_study` and `transition_table` compare the delay around
+  network changes. `group_delay`, `binned`, `spearman` and `corr_matrix`
+  drive the Analysis charts, and `round_scorecard` the per-round table.
+- A tower list is kept in `st.session_state["towers_df"]` once loaded, so
+  Diagnose and Analysis can use it.
+
 ## Memory
 
 A few thousand rounds is millions of rows. `shrink()` (in app.py) casts

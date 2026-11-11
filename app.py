@@ -16,7 +16,7 @@ import folium
 from folium.plugins import HeatMap
 import streamlit.components.v1 as components
 
-APP_VERSION = "v6.0"
+APP_VERSION = "v7.0"
 
 _HAS_DATA = st.session_state.get("df") is not None
 
@@ -1097,6 +1097,283 @@ def _with_flush(html):
     return html.replace("</body>", _FLUSH_JS + "</body>", 1)
 
 
+ISSUE_LABELS = {
+    "delay": "Delay",
+    "gap": "Recording gap",
+    "accuracy": "Poor GPS accuracy",
+    "signal": "HDOP / SNR",
+    "netchange": "Network change",
+    "buffered": "Buffered",
+    "jump": "GPS jump",
+}
+
+
+def _hav_m(lat1, lon1, lat2, lon2):
+    k = 111_320.0
+    la2 = np.asarray(lat2, dtype=float)
+    dy = (la2 - np.asarray(lat1, dtype=float)) * k
+    dx = ((np.asarray(lon2, dtype=float) - np.asarray(lon1, dtype=float))
+          * k * np.cos(np.radians(la2)))
+    return np.sqrt(dx * dx + dy * dy)
+
+
+def prepare_diag(df):
+    want = ["round_id", "tag", "device_id", "fix_id", "recorded", "diff_s",
+            "interval_s", "lat", "lon", "prev_lat", "prev_lon", "accuracy_m",
+            "hdop", "snr", "is_cached", "cell_id", "network", "net_name",
+            "location", "hole"]
+    w = df[[c for c in want if c in df.columns]].copy()
+    for c in ("round_id", "tag", "device_id", "cell_id", "network",
+              "net_name", "location"):
+        if c in w.columns:
+            w[c] = w[c].astype("object")
+    for c in ("diff_s", "interval_s", "accuracy_m", "hole", "hdop", "snr"):
+        if c in w.columns:
+            w[c] = pd.to_numeric(w[c], errors="coerce").astype(float)
+        else:
+            w[c] = np.nan
+    for c in ("network", "cell_id", "prev_lat", "prev_lon"):
+        if c not in w.columns:
+            w[c] = None if c in ("network", "cell_id") else np.nan
+    if "is_cached" not in w.columns:
+        w["is_cached"] = False
+    w = w.sort_values(["round_id", "recorded"], kind="stable")
+    w = w.reset_index(drop=True)
+    g = w.groupby("round_id", sort=False)
+    dist = _hav_m(w["prev_lat"], w["prev_lon"], w["lat"], w["lon"])
+    ok = (w["interval_s"] > 0).to_numpy()
+    iv = np.where(ok, w["interval_s"].to_numpy(dtype=float), 1.0)
+    w["speed_mps"] = np.where(ok, dist / iv, np.nan)
+    w["prev_network"] = g["network"].shift(1)
+    w["prev_cell"] = g["cell_id"].shift(1)
+    w["net_change"] = (w["prev_network"].notna() & w["network"].notna()
+                       & (w["prev_network"] != w["network"]))
+    w["cell_change"] = (w["prev_cell"].notna() & w["cell_id"].notna()
+                        & (w["prev_cell"] != w["cell_id"]))
+    w["is_cached"] = w["is_cached"].fillna(False).astype(bool)
+    return w
+
+
+def attach_towers(w, towers):
+    out = w.copy()
+    if towers is None or len(towers) == 0 or "cell_id" not in out.columns:
+        return out
+    out["cell_dec"] = out["cell_id"].map(hex_to_dec)
+    t = towers[["cell_dec", "tower_lat", "tower_lon"]].drop_duplicates(
+        "cell_dec")
+    out = out.merge(t, on="cell_dec", how="left")
+    out["dist_tower_m"] = _hav_m(out["tower_lat"], out["tower_lon"],
+                                 out["lat"], out["lon"])
+    return out
+
+
+def issue_flags(w, p):
+    f = pd.DataFrame(index=w.index)
+    f["delay"] = w["diff_s"] > p["delay_s"]
+    f["gap"] = w["interval_s"] >= p["gap_s"]
+    f["accuracy"] = w["accuracy_m"] > p["acc_m"]
+    f["signal"] = (w["hdop"] > p["hdop"]) | (w["snr"] < p["snr"])
+    f["netchange"] = w["net_change"]
+    f["buffered"] = w["is_cached"]
+    f["jump"] = w["speed_mps"] > p["speed"]
+    return f.fillna(False).astype(bool)
+
+
+def grid_stack(w, flags, enabled, bin_m=25.0, presence=20.0, min_fixes=3):
+    enabled = list(enabled)
+    cols = ["ia", "ib"] + enabled + ["fixes", "types", "load", "south",
+                                     "west", "north", "east"]
+    d = w[["lat", "lon"]].dropna()
+    if d.empty or not enabled:
+        return pd.DataFrame(columns=cols)
+    lat0 = float(d["lat"].median())
+    dlat = bin_m / 111_320.0
+    dlon = bin_m / (111_320.0 * max(math.cos(math.radians(lat0)), 0.01))
+    fl = flags.loc[d.index, enabled].astype(float)
+    fl["ia"] = np.floor(d["lat"].to_numpy(dtype=float) / dlat).astype(np.int64)
+    fl["ib"] = np.floor(d["lon"].to_numpy(dtype=float) / dlon).astype(np.int64)
+    g = fl.groupby(["ia", "ib"])
+    cells = g[enabled].mean() * 100.0
+    cells["fixes"] = g.size()
+    cells = cells[cells["fixes"] >= min_fixes].reset_index()
+    if cells.empty:
+        return pd.DataFrame(columns=cols)
+    cells["types"] = (cells[enabled] >= presence).sum(axis=1)
+    cells["load"] = cells[enabled].sum(axis=1) / 100.0
+    cells["south"] = cells["ia"] * dlat
+    cells["north"] = (cells["ia"] + 1) * dlat
+    cells["west"] = cells["ib"] * dlon
+    cells["east"] = (cells["ib"] + 1) * dlon
+    return cells
+
+
+def _around(w, col, k):
+    return w.groupby("round_id", sort=False)[col].shift(-k)
+
+
+def network_event_study(w, lo=-3, hi=3):
+    ev = w["net_change"].to_numpy(dtype=bool)
+    rows = []
+    for k in range(lo, hi + 1):
+        v = _around(w, "diff_s", k)[ev].dropna() if ev.any() else []
+        rows.append({
+            "offset": k,
+            "median_diff": float(np.median(v)) if len(v) else np.nan,
+            "mean_diff": float(np.mean(v)) if len(v) else np.nan,
+            "events": int(len(v)),
+        })
+    return pd.DataFrame(rows)
+
+
+def transition_table(w, min_events=2):
+    cols = ["from_network", "to_network", "events", "before_s", "after_s",
+            "change_s"]
+    ev = w["net_change"].to_numpy(dtype=bool)
+    if not ev.any():
+        return pd.DataFrame(columns=cols)
+    m = pd.DataFrame({k: _around(w, "diff_s", k)[ev].to_numpy()
+                      for k in (-3, -2, -1, 0, 1, 2)})
+    t = w.loc[ev, ["prev_network", "network"]].reset_index(drop=True)
+    t["before_s"] = m[[-3, -2, -1]].median(axis=1).to_numpy()
+    t["after_s"] = m[[0, 1, 2]].median(axis=1).to_numpy()
+    out = (t.groupby(["prev_network", "network"])
+           .agg(events=("before_s", "size"), before_s=("before_s", "median"),
+                after_s=("after_s", "median")).reset_index())
+    out["change_s"] = out["after_s"] - out["before_s"]
+    out = out.rename(columns={"prev_network": "from_network",
+                              "network": "to_network"})
+    out = out[out["events"] >= min_events]
+    return out.sort_values("events", ascending=False).reset_index(drop=True)
+
+
+def group_delay(w, key, ok_s=5.0, max_s=120.0, min_n=30):
+    d = w.dropna(subset=[key, "diff_s"]).copy()
+    cols = [key, "fixes", "rounds", "median_diff", "pct_over_ok",
+            "pct_over_max", "pct_buffered"]
+    if d.empty:
+        return pd.DataFrame(columns=cols)
+    d["_ok"] = d["diff_s"] > ok_s
+    d["_max"] = d["diff_s"] > max_s
+    g = d.groupby(key)
+    out = pd.DataFrame({
+        "fixes": g.size(),
+        "rounds": g["round_id"].nunique(),
+        "median_diff": g["diff_s"].median(),
+        "pct_over_ok": g["_ok"].mean() * 100.0,
+        "pct_over_max": g["_max"].mean() * 100.0,
+        "pct_buffered": g["is_cached"].mean() * 100.0,
+    }).reset_index()
+    out = out[out["fixes"] >= min_n]
+    return out.sort_values("pct_over_ok", ascending=False).reset_index(
+        drop=True)
+
+
+def binned(w, xcol, edges, labels, ok_s=5.0, gap_s=75.0):
+    cols = ["bin", "fixes", "median_interval", "mean_interval", "median_diff",
+            "mean_diff", "pct_delayed", "pct_gaps"]
+    d = w.dropna(subset=[xcol]).copy()
+    if d.empty:
+        return pd.DataFrame(columns=cols)
+    d["bin"] = pd.cut(d[xcol].astype(float), bins=edges, labels=labels,
+                      right=False)
+    d["_late"] = d["diff_s"] > ok_s
+    d["_gap"] = d["interval_s"] >= gap_s
+    g = d.groupby("bin", observed=True)
+    out = pd.DataFrame({
+        "fixes": g.size(),
+        "median_interval": g["interval_s"].median(),
+        "mean_interval": g["interval_s"].mean(),
+        "median_diff": g["diff_s"].median(),
+        "mean_diff": g["diff_s"].mean(),
+        "pct_delayed": g["_late"].mean() * 100.0,
+        "pct_gaps": g["_gap"].mean() * 100.0,
+    }).reset_index()
+    out["bin"] = out["bin"].astype(str)
+    return out
+
+
+def spearman(a, b, min_n=30):
+    d = pd.DataFrame({"a": pd.to_numeric(pd.Series(a), errors="coerce"),
+                      "b": pd.to_numeric(pd.Series(b), errors="coerce")}
+                     ).dropna()
+    if len(d) < min_n or d["a"].nunique() < 2 or d["b"].nunique() < 2:
+        return None, int(len(d))
+    return float(d["a"].rank().corr(d["b"].rank())), int(len(d))
+
+
+def describe_link(rho):
+    if rho is None or (isinstance(rho, float) and math.isnan(rho)):
+        return "not enough data to say"
+    a = abs(rho)
+    if a < 0.1:
+        return "no clear link"
+    strength = ("a weak link" if a < 0.3 else
+                "a moderate link" if a < 0.5 else "a strong link")
+    way = "they rise together" if rho > 0 else "one falls as the other rises"
+    return f"{strength} ({way})"
+
+
+def corr_matrix(w, cols, min_n=30):
+    rows = []
+    for i, a in enumerate(cols):
+        for j, b in enumerate(cols):
+            if i == j:
+                rows.append({"a": a, "b": b, "rho": 1.0, "n": int(w[a].notna().sum())})
+                continue
+            rho, n = spearman(w[a], w[b], min_n)
+            rows.append({"a": a, "b": b, "rho": rho, "n": n})
+    return pd.DataFrame(rows)
+
+
+def rounds_table(w):
+    g = w.groupby("round_id", sort=False)
+    t = pd.DataFrame({"tag": g["tag"].first(), "start": g["recorded"].min(),
+                      "n": g.size()}).reset_index()
+    t["_k"] = pd.to_numeric(t["tag"].astype(str), errors="coerce")
+    t = t.sort_values(["_k", "tag", "start"]).drop(columns="_k")
+    t = t.reset_index(drop=True)
+    t["label"] = [f"Tag {r.tag} · {str(r.start)[5:16]} · {r.n} fixes"
+                  for r in t.itertuples()]
+    dup = t["label"].duplicated(keep=False)
+    t.loc[dup, "label"] = [f"{r.label} · {str(r.round_id)[:6]}"
+                           for r in t[dup].itertuples()]
+    return t
+
+
+def round_scorecard(w, flags, ok_s=5.0):
+    rid = w["round_id"]
+    g = w.groupby("round_id", sort=False)
+    fg = flags.groupby(rid, sort=False)
+    out = pd.DataFrame({
+        "tag": g["tag"].first(),
+        "start": g["recorded"].min(),
+        "fixes": g.size(),
+        "median_diff": g["diff_s"].median(),
+        "pct_delayed": (w["diff_s"] > ok_s).groupby(rid, sort=False).mean()
+        * 100.0,
+        "longest_gap_s": g["interval_s"].max(),
+        "net_changes": fg["netchange"].sum().astype(int),
+        "pct_poor_gps": fg["accuracy"].mean() * 100.0,
+        "pct_signal": fg["signal"].mean() * 100.0,
+        "pct_buffered": fg["buffered"].mean() * 100.0,
+        "issue_load": flags.sum(axis=1).groupby(rid, sort=False).mean(),
+    }).reset_index()
+    return out.sort_values("start").reset_index(drop=True)
+
+
+def issues_by_hole(w, flags, enabled):
+    d = w[["hole"]].copy()
+    for k in enabled:
+        d[k] = flags[k].astype(float)
+    d = d.dropna(subset=["hole"])
+    if d.empty:
+        return pd.DataFrame()
+    out = d.groupby("hole")[list(enabled)].mean() * 100.0
+    out.index = out.index.astype(int)
+    out["fixes"] = d.groupby("hole").size()
+    return out.sort_index()
+
+
 def hex_to_dec(v):
     if v is None:
         return None
@@ -1924,9 +2201,14 @@ def render_network_view(df):
                             subset=["cell_dec", "tower_lat", "tower_lon"])
                             .drop_duplicates("cell_dec"))
                         st.success(f"{len(towers):,} towers loaded.")
+                        st.session_state["towers_df"] = towers
                 except Exception as e:
                     st.error(f"Couldn't read that CSV: {e}")
                     towers = None
+            elif st.session_state.get("towers_df") is not None:
+                towers = st.session_state["towers_df"]
+                st.success(f"Using the {len(towers):,} towers you loaded "
+                           "earlier.")
 
         if towers is not None and not towers.empty:
             cells = cells.merge(towers[["cell_dec", "tower_lat",
@@ -2998,11 +3280,936 @@ def render_gps_view(df):
         render_accuracy_view(df)
 
 
-_sw1, _sw2 = st.columns([1.7, 1])
+LAYER_NAMES = ["Route", "Delay", "Gaps", "GPS accuracy", "HDOP / SNR",
+               "Network", "Buffered", "GPS jumps", "Cell towers"]
+LAYER_COLOURS = {"Route": "#9FB3C8", "Delay": C_HIGH, "Gaps": C_EXTREME,
+                 "GPS accuracy": C_WARN, "HDOP / SNR": "#FF1744",
+                 "Network": "#00E5FF", "Buffered": "#00B0FF",
+                 "GPS jumps": "#FFFFFF", "Cell towers": "#FFD600"}
+STACK_COLOURS = [C_WARN, C_HIGH, C_BAD, C_EXTREME]
+AN_OK_S = 5.0
+AN_MAX_S = 120.0
+
+
+def _signal_limits(df):
+    h = st.session_state.get("_thr_fix_hdop")
+    s = st.session_state.get("_thr_fix_snr")
+    if h is None or s is None:
+        sh, ss = (suggest_limits(df["hdop"], df["snr"])
+                  if "hdop" in df.columns and "snr" in df.columns
+                  else (None, None))
+        h = sh if sh is not None else 1.2
+        s = ss if ss is not None else 18.0
+    return float(h), float(s)
+
+
+def _diag_frame(df, with_towers=False):
+    fp = (len(df), str(df["recorded"].min()), str(df["recorded"].max()),
+          str(df["fix_id"].iloc[0]) if len(df) else "")
+    cached = st.session_state.get("_diag_cache")
+    if cached is not None and cached[0] == fp:
+        w = cached[1]
+    else:
+        w = prepare_diag(df)
+        st.session_state["_diag_cache"] = (fp, w)
+    if with_towers:
+        return attach_towers(w, st.session_state.get("towers_df"))
+    return w
+
+
+def _gap_default(w):
+    nominal = num(w["interval_s"].dropna().median(), 25.0) or 25.0
+    return int(min(600, max(30, round(max(nominal * 3, nominal + 30)))))
+
+
+def _issue_params(w, df):
+    hd, sn = _signal_limits(df)
+    g = st.session_state.get
+    return {"delay_s": float(g("dg_delay", 60)),
+            "gap_s": float(g("dg_gap", _gap_default(w))),
+            "acc_m": float(g("dg_acc", 10)), "hdop": hd, "snr": sn,
+            "speed": float(g("dg_speed", 15)),
+            "bin_m": float(g("dg_bin", 25)),
+            "presence": float(g("dg_presence", 20))}
+
+
+def diag_settings(w, df):
+    hd, sn = _signal_limits(df)
+    with st.expander("What counts as an issue"):
+        picked = st.multiselect(
+            "Issue types to count", list(ISSUE_LABELS.values()), default=[],
+            key="dg_enabled", placeholder="All issue types",
+            help="These are the problems added up in the issue stack. "
+                 "Leave empty to count all of them.")
+        c1, c2, c3, c4 = st.columns(4)
+        delay_s = c1.slider("Delay above (s)", 5, 600, 60, 5,
+                            key="dg_delay")
+        gap_s = c2.slider("Recording gap above (s)", 30, 600,
+                          _gap_default(w), 5, key="dg_gap")
+        acc_m = c3.slider("Accuracy worse than (m)", 2, 50, 10, 1,
+                          key="dg_acc")
+        speed = c4.slider("GPS jump above (m/s)", 5, 40, 15, 1,
+                          key="dg_speed")
+        d1, d2 = st.columns(2)
+        bin_m = d1.slider("Square size (m)", 10, 100, 25, 5, key="dg_bin")
+        presence = d2.slider("A square counts an issue at (% of its fixes)",
+                             5, 100, 20, 5, key="dg_presence")
+        st.caption(f"HDOP above {hd:g} or SNR below {sn:g} counts as an "
+                   "HDOP / SNR issue — the Fix limits from the GPS accuracy "
+                   "page.")
+    inv = {v: k for k, v in ISSUE_LABELS.items()}
+    enabled = [inv[x] for x in picked] or list(ISSUE_LABELS)
+    p = {"delay_s": float(delay_s), "gap_s": float(gap_s),
+         "acc_m": float(acc_m), "hdop": hd, "snr": sn,
+         "speed": float(speed), "bin_m": float(bin_m),
+         "presence": float(presence)}
+    return p, enabled
+
+
+def scope_picker(w, prefix, everything=True):
+    rt = rounds_table(w)
+    opts = ["Tag", "Round"] + (["Everything"] if everything else [])
+    scope = st.radio("Look at", opts, horizontal=True,
+                     key=f"{prefix}_scope",
+                     help="A tag across its rounds, one round, or every "
+                          "fix at once.")
+    if scope == "Everything":
+        return scope, w, f"Everything · {len(rt)} rounds"
+    if scope == "Round":
+        pick = st.selectbox("Round", rt["label"].tolist(),
+                            key=f"{prefix}_round")
+        rid = rt.loc[rt["label"] == pick, "round_id"].iloc[0]
+        return scope, w[w["round_id"] == rid], pick
+    tags = sort_tags(rt["tag"].dropna().unique())
+    c1, c2 = st.columns([1, 3])
+    tag = c1.selectbox("Tag", tags, key=f"{prefix}_tag")
+    mine = rt[rt["tag"].astype(str) == str(tag)]
+    picks = c2.multiselect("Rounds", mine["label"].tolist(), default=[],
+                           key=f"{prefix}_rounds_{tag}",
+                           placeholder="All rounds of this tag")
+    chosen = mine[mine["label"].isin(picks)] if picks else mine
+    sub = w[w["round_id"].isin(chosen["round_id"])]
+    plural = "s" if len(chosen) != 1 else ""
+    return scope, sub, f"Tag {tag} · {len(chosen)} round{plural}"
+
+
+@st.cache_data(show_spinner=False, max_entries=6)
+def build_diag_map(pts, flags, cells, layers, p, towers_pts, centre,
+                   net_cols, stack_visible, enabled):
+    m = folium.Map(location=list(centre), zoom_start=16, max_zoom=20,
+                   tiles=None, control_scale=True, prefer_canvas=True)
+    folium.TileLayer(
+        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/"
+              "World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        attr="Esri — World Imagery", name="Satellite", max_zoom=20,
+    ).add_to(m)
+    m.get_root().header.add_child(folium.Element(
+        f"<style>.leaflet-tile-pane{{filter:{TILE_FILTER};}}</style>"))
+    dark_seams(m)
+    d = pts.reset_index(drop=True)
+    fl = flags.reset_index(drop=True)
+
+    def group(name, show=True):
+        g = folium.FeatureGroup(name=name, show=show)
+        g.add_to(m)
+        return g
+
+    if "Route" in layers:
+        g = group("Route")
+        for _, grp in d.groupby("round_id", sort=False):
+            if len(grp) > 1:
+                folium.PolyLine(list(zip(grp["lat"], grp["lon"])),
+                                color=LAYER_COLOURS["Route"], weight=2,
+                                opacity=0.35).add_to(g)
+
+    if "Network" in layers:
+        g = group("Network")
+        for _, grp in d.groupby("round_id", sort=False):
+            labels = list(grp["network"].fillna("Unknown"))
+            coords = list(zip(grp["lat"], grp["lon"]))
+            for val, i0, i1 in runs_of(labels):
+                seg = (coords[i0:i1 + 2] if i1 + 1 < len(coords)
+                       else coords[i0:i1 + 1])
+                if len(seg) >= 2:
+                    folium.PolyLine(
+                        seg, color=net_cols.get(str(val), "#FFFFFF"),
+                        weight=3, opacity=0.9, tooltip=str(val)).add_to(g)
+        for r in d[d["net_change"]].head(600).itertuples():
+            folium.CircleMarker(
+                [r.lat, r.lon], radius=8, color="#FFFFFF", weight=2,
+                fill=True, fill_color=net_cols.get(str(r.network), "#FFF"),
+                fill_opacity=1.0,
+                tooltip=f"Network change: {r.prev_network} → {r.network}"
+                        f" · Tag {r.tag} · {r.location}").add_to(g)
+
+    if "Gaps" in layers:
+        g = group("Gaps")
+        sel = d[fl["gap"].to_numpy()].dropna(
+            subset=["prev_lat", "prev_lon"]).nlargest(800, "interval_s")
+        for r in sel.itertuples():
+            folium.PolyLine(
+                [[r.prev_lat, r.prev_lon], [r.lat, r.lon]],
+                color=LAYER_COLOURS["Gaps"], weight=4, opacity=0.95,
+                dash_array="6 5",
+                tooltip=f"No fix for {fmt_dur(r.interval_s)}"
+                        f" · Tag {r.tag} · {r.location}").add_to(g)
+
+    if "Delay" in layers:
+        g = group("Delay")
+        sel = d[fl["delay"].to_numpy()].nlargest(1500, "diff_s")
+        for r in sel.itertuples():
+            col = (C_EXTREME if r.diff_s >= 600 else
+                   C_BAD if r.diff_s >= 300 else
+                   C_HIGH if r.diff_s >= 120 else C_WARN)
+            folium.CircleMarker(
+                [r.lat, r.lon],
+                radius=4 + min(8.0, math.log1p(r.diff_s) * 1.2),
+                color=col, weight=0, fill=True, fill_color=col,
+                fill_opacity=0.75,
+                tooltip=f"Delay {fmt_dur(r.diff_s)} · Tag {r.tag}"
+                        f" · {r.location}").add_to(g)
+
+    if "GPS accuracy" in layers:
+        g = group("GPS accuracy")
+        sel = d[fl["accuracy"].to_numpy()].nlargest(1500, "accuracy_m")
+        for r in sel.itertuples():
+            folium.CircleMarker(
+                [r.lat, r.lon], radius=5 + min(8.0, r.accuracy_m / 5.0),
+                color=LAYER_COLOURS["GPS accuracy"], weight=2, fill=False,
+                tooltip=f"Accuracy {r.accuracy_m:.0f} m · Tag {r.tag}"
+                        f" · {r.location}").add_to(g)
+
+    if "HDOP / SNR" in layers:
+        g = group("HDOP / SNR")
+        for r in d[fl["signal"].to_numpy()].head(1500).itertuples():
+            bad_h = bool(r.hdop > p["hdop"])
+            bad_s = bool(r.snr < p["snr"])
+            col = ("#FF1744" if bad_h and bad_s else
+                   "#E040FB" if bad_h else "#FFAB00")
+            folium.CircleMarker(
+                [r.lat, r.lon], radius=4, color="#FFFFFF", weight=1,
+                fill=True, fill_color=col, fill_opacity=0.95,
+                tooltip=f"HDOP {r.hdop:g} · SNR {r.snr:g} · Tag {r.tag}"
+                        f" · {r.location}").add_to(g)
+
+    if "Buffered" in layers:
+        g = group("Buffered")
+        for r in d[fl["buffered"].to_numpy()].head(1500).itertuples():
+            folium.CircleMarker(
+                [r.lat, r.lon], radius=4, color=LAYER_COLOURS["Buffered"],
+                weight=1, fill=True, fill_color=LAYER_COLOURS["Buffered"],
+                fill_opacity=0.8,
+                tooltip=f"Buffered fix · Tag {r.tag} · {r.location}"
+            ).add_to(g)
+
+    if "GPS jumps" in layers:
+        g = group("GPS jumps")
+        for r in d[fl["jump"].to_numpy()].head(500).itertuples():
+            folium.CircleMarker(
+                [r.lat, r.lon], radius=7, color="#FFFFFF", weight=2,
+                fill=True, fill_color="#FF1744", fill_opacity=1.0,
+                tooltip=f"Jump: {r.speed_mps:.0f} m/s · Tag {r.tag}"
+                        f" · {r.location}").add_to(g)
+
+    if "Cell towers" in layers and towers_pts is not None:
+        g = group("Cell towers")
+        for r in towers_pts.head(300).itertuples():
+            folium.CircleMarker(
+                [r.tower_lat, r.tower_lon], radius=8, color="#FFFFFF",
+                weight=2, fill=True, fill_color=LAYER_COLOURS["Cell towers"],
+                fill_opacity=1.0,
+                tooltip=f"Tower · cell {cell_both(r.cell_id)} · "
+                        f"{r.network} · {int(r.fixes)} fixes").add_to(g)
+
+    if cells is not None and len(cells):
+        g = group("Issue stack", show=bool(stack_visible))
+        top = cells.sort_values(["types", "load"], ascending=False).head(4000)
+        for r in top.itertuples():
+            k = int(r.types)
+            if k < 1:
+                continue
+            col = STACK_COLOURS[min(k, 4) - 1]
+            parts = sorted(((getattr(r, key), ISSUE_LABELS[key])
+                            for key in enabled if getattr(r, key) >= 1),
+                           reverse=True)
+            tip = (f"{k} issue type{'s' if k != 1 else ''} · "
+                   f"{int(r.fixes)} fixes<br>"
+                   + "<br>".join(f"{lab} {v:.0f}%" for v, lab in parts))
+            folium.Rectangle(
+                [[r.south, r.west], [r.north, r.east]], color=col,
+                weight=0.5, fill=True, fill_color=col,
+                fill_opacity=min(0.75, 0.22 + 0.14 * k),
+                tooltip=tip).add_to(g)
+
+    folium.LayerControl(collapsed=False).add_to(m)
+    return m.get_root().render()
+
+
+def _chip(colour, text):
+    return ('<span style="display:inline-flex;align-items:center;gap:6px">'
+            f'<i style="width:12px;height:12px;border-radius:50%;'
+            f'background:{colour};border:1px solid {C_TEXT};'
+            f'display:inline-block"></i>{text}</span>')
+
+
+def diag_legend(flags, layers, p, mode, presence, have_towers):
+    n = lambda k: int(flags[k].sum())
+    if mode == "Issue stack":
+        items = [_chip(STACK_COLOURS[0], "1 issue type"),
+                 _chip(STACK_COLOURS[1], "2 types"),
+                 _chip(STACK_COLOURS[2], "3 types"),
+                 _chip(STACK_COLOURS[3], "4 or more")]
+        note = (f"A square counts an issue once {presence:g}% of its fixes "
+                "have it. The more types stack in one square, the more "
+                "likely a single cause is behind them.")
+    else:
+        spec = {"Delay": f"Delay over {p['delay_s']:g}s ({n('delay')})",
+                "Gaps": f"No fix for {p['gap_s']:g}s+ ({n('gap')})",
+                "GPS accuracy": f"Accuracy worse than {p['acc_m']:g} m "
+                                f"({n('accuracy')})",
+                "HDOP / SNR": f"HDOP above {p['hdop']:g} / SNR below "
+                              f"{p['snr']:g} ({n('signal')})",
+                "Network": f"Operator, ringed where it changed "
+                           f"({n('netchange')})",
+                "Buffered": f"Buffered ({n('buffered')})",
+                "GPS jumps": f"Jump over {p['speed']:g} m/s ({n('jump')})",
+                "Cell towers": "Serving tower",
+                "Route": "Route"}
+        items = [_chip(LAYER_COLOURS[k], spec[k]) for k in LAYER_NAMES
+                 if k in layers and (k != "Cell towers" or have_towers)]
+        note = ("Use the layer box on the map to switch layers on and off. "
+                "Markers show the worst fixes first.")
+    return ('<div style="display:flex;flex-wrap:wrap;gap:6px 18px;'
+            'margin:8px 0 2px;font-size:13px">' + "".join(items)
+            + f'</div><div style="font-size:12px;opacity:.7;margin-top:4px">'
+            f'{note}</div>')
+
+
+def _heat_chart(long, x, y, vtitle, xsort=None, height=240, fmt=".0f",
+                angle=-30):
+    base = alt.Chart(long).encode(
+        x=alt.X(f"{x}:N", title="", sort=xsort,
+                axis=alt.Axis(labelAngle=angle, labelLimit=160)),
+        y=alt.Y(f"{y}:O", title=y.replace("_", " ").title(),
+                axis=alt.Axis(labelOverlap=False, tickMinStep=1,
+                              labelLimit=260)))
+    rect = base.mark_rect().encode(
+        color=alt.Color("pct:Q", title=vtitle,
+                        scale=alt.Scale(domain=[0, 50, 100],
+                                        range=["#121A22", C_HIGH, C_BAD])),
+        tooltip=[alt.Tooltip(f"{x}:N"), alt.Tooltip(f"{y}:O"),
+                 alt.Tooltip("pct:Q", format=".1f", title=vtitle)])
+    text = base.mark_text(fontSize=11).encode(
+        text=alt.Text("pct:Q", format=fmt), color=alt.value("#F5F5F5"))
+    return (rect + text).properties(height=height)
+
+
+def _bar(data, x, y, y_title, tips, *, x_title="", colour=None, fmt=".1f",
+         height=280, angle=0):
+    colour = colour or C_ACCENT
+    sort = list(data[x])
+    enc_x = alt.X(f"{x}:N", sort=sort, title=x_title,
+                  axis=alt.Axis(labelAngle=angle, labelLimit=200))
+    base = alt.Chart(data)
+    bars = base.mark_bar(color=colour, cornerRadiusTopLeft=2,
+                         cornerRadiusTopRight=2).encode(
+        x=enc_x, y=alt.Y(f"{y}:Q", title=y_title),
+        tooltip=[alt.Tooltip(f, title=t) for f, t in tips])
+    text = base.mark_text(dy=-7, color="#F5F5F5", fontSize=11,
+                          fontWeight="bold").encode(
+        x=enc_x, y=alt.Y(f"{y}:Q"), text=alt.Text(f"{y}:Q", format=fmt))
+    return (bars + text).properties(height=height)
+
+
+def _diag_by_hole(sub, flags_all, enabled):
+    ih = issues_by_hole(sub, flags_all, enabled)
+    if ih.empty:
+        st.info("No hole information in these fixes.")
+        return
+    long = (ih.drop(columns="fixes").reset_index()
+            .melt(id_vars="hole", var_name="issue", value_name="pct"))
+    long["issue"] = long["issue"].map(ISSUE_LABELS)
+    st.markdown("**Share of each hole's fixes with each issue** — the "
+                "hotter the square, the more of that hole it affects.")
+    st.altair_chart(
+        _heat_chart(long, "issue", "hole", "% of fixes",
+                    xsort=[ISSUE_LABELS[k] for k in enabled],
+                    height=max(220, 24 * len(ih))),
+        use_container_width=True)
+    shown = ih.rename(columns={**ISSUE_LABELS, "fixes": "Fixes"}).round(1)
+    shown.index.name = "Hole"
+    st.dataframe(shown, use_container_width=True)
+
+
+def _diag_hotspots(cells, enabled):
+    if cells is None or cells.empty:
+        st.info("No squares with enough fixes to rank.")
+        return
+    top = cells.sort_values(["types", "load", "fixes"],
+                            ascending=False).head(15)
+
+    def what(r):
+        parts = sorted(((r[k], ISSUE_LABELS[k]) for k in enabled
+                        if r[k] >= 1), reverse=True)
+        return " · ".join(f"{lab} {v:.0f}%" for v, lab in parts)
+
+    out = pd.DataFrame({
+        "Issue types stacked": top["types"].astype(int).to_numpy(),
+        "Fixes": top["fixes"].astype(int).to_numpy(),
+        "Issues per fix": top["load"].round(2).to_numpy(),
+        "What's wrong": top.apply(what, axis=1).to_numpy(),
+        "Latitude": ((top["south"] + top["north"]) / 2).round(6).to_numpy(),
+        "Longitude": ((top["west"] + top["east"]) / 2).round(6).to_numpy(),
+    })
+    st.caption("The 15 squares where the most different problems stack up. "
+               "Paste a latitude and longitude into any map to go there.")
+    st.dataframe(out, use_container_width=True, hide_index=True)
+    st.download_button("Download hotspots CSV", out.to_csv(index=False)
+                       .encode(), file_name="issue_hotspots.csv",
+                       mime="text/csv")
+
+
+def render_round_overlay(r, p):
+    r = r.sort_values("recorded")
+    if len(r) < 3 or r["recorded"].isna().all():
+        st.info("Too few fixes in this round to chart.")
+        return
+    tmin, tmax = r["recorded"].min(), r["recorded"].max()
+    def clock(show):
+        return alt.X("recorded:T", title="",
+                     scale=alt.Scale(domain=[tmin, tmax]),
+                     axis=alt.Axis(labels=show, ticks=show))
+
+    xs = clock(True)
+    changes = r.loc[r["net_change"], ["recorded", "prev_network",
+                                      "network"]]
+    rules = None
+    if not changes.empty:
+        rules = alt.Chart(changes).mark_rule(
+            color="#FFFFFF", opacity=0.55, strokeDash=[2, 3]).encode(
+            x="recorded:T",
+            tooltip=[alt.Tooltip("prev_network:N", title="From"),
+                     alt.Tooltip("network:N", title="To")])
+
+    def panel(col, title, colour, limit, show):
+        d = r[["recorded", col]].dropna()
+        if d.empty:
+            return None
+        layers = [alt.Chart(d).mark_line(color=colour, strokeWidth=1.6)
+                  .encode(x=clock(show), y=alt.Y(f"{col}:Q", title=title),
+                          tooltip=[alt.Tooltip("recorded:T", title="Time"),
+                                   alt.Tooltip(f"{col}:Q", title=title)])]
+        layers.append(alt.Chart(pd.DataFrame({"y": [limit]}))
+                      .mark_rule(color=C_BAD, strokeDash=[4, 3], opacity=.8)
+                      .encode(y="y:Q"))
+        if rules is not None:
+            layers.append(rules)
+        return alt.layer(*layers).properties(height=84)
+
+    spec = [("diff_s", "Delay (s)", C_HIGH, p["delay_s"]),
+            ("interval_s", "Interval (s)", C_EXTREME, p["gap_s"]),
+            ("accuracy_m", "Accuracy (m)", C_WARN, p["acc_m"]),
+            ("hdop", "HDOP", "#E040FB", p["hdop"]),
+            ("snr", "SNR", "#FFAB00", p["snr"])]
+    have = [s for s in spec if r[s[0]].notna().any()]
+    panels = [panel(*s, show=(i == len(have) - 1))
+              for i, s in enumerate(have)]
+    panels = [x for x in panels if x is not None]
+    st.markdown("**One round, every measure, same clock**")
+    if panels:
+        st.altair_chart(alt.vconcat(*panels).resolve_scale(x="shared"),
+                        use_container_width=True)
+    st.caption("Dashed red lines are the issue thresholds; dashed white "
+               "lines are network changes.")
+
+    frames = []
+    for col, label, flip in (("diff_s", "Delay", False),
+                             ("interval_s", "Interval", False),
+                             ("accuracy_m", "GPS accuracy", False),
+                             ("hdop", "HDOP", False),
+                             ("snr", "SNR (flipped)", True)):
+        s = pd.to_numeric(r[col], errors="coerce")
+        if s.notna().sum() < 3:
+            continue
+        lo, hi = float(s.min()), float(s.max())
+        z = (s - lo) / (hi - lo) if hi > lo else s * 0.0
+        if flip:
+            z = 1.0 - z
+        frames.append(pd.DataFrame({"recorded": r["recorded"],
+                                    "measure": label, "scaled": z,
+                                    "value": s}))
+    if not frames:
+        return
+    long = pd.concat(frames).dropna(subset=["scaled"])
+    doms = list(long["measure"].unique())
+    cols = {"Delay": C_HIGH, "Interval": C_EXTREME, "GPS accuracy": C_WARN,
+            "HDOP": "#E040FB", "SNR (flipped)": "#FFAB00"}
+    lines = alt.Chart(long).mark_line(strokeWidth=1.5).encode(
+        x=xs, y=alt.Y("scaled:Q", title="worse →",
+                      scale=alt.Scale(domain=[0, 1])),
+        color=alt.Color("measure:N", title="",
+                        scale=alt.Scale(domain=doms,
+                                        range=[cols[x] for x in doms])),
+        tooltip=[alt.Tooltip("recorded:T", title="Time"),
+                 alt.Tooltip("measure:N", title="Measure"),
+                 alt.Tooltip("value:Q", title="Value", format=".1f")])
+    over = alt.layer(lines, rules) if rules is not None else lines
+    st.markdown("**All together, each scaled 0–1 so the shapes line up**")
+    st.altair_chart(over.properties(height=240), use_container_width=True)
+    st.caption("Each measure is stretched between its own lowest and "
+               "highest value in this round, and SNR is flipped so that "
+               "up always means worse. Lines that jump together point at "
+               "one cause.")
+
+
+def render_diagnose_view(df):
+    st.subheader("Diagnose")
+    st.caption("Everything recorded for a tag or a round, drawn on top of "
+               "each other. Each layer marks where a different problem "
+               "happened — where several stack up is where to look.")
+    w = _diag_frame(df, with_towers=True)
+    if w[["lat", "lon"]].dropna().empty:
+        st.info("No fixes with a position to draw.")
+        return
+    scope, sub, title = scope_picker(w, "dg")
+    p, enabled = diag_settings(w, df)
+    flags_all = issue_flags(w, p)
+    flags = flags_all.loc[sub.index]
+    pos = sub.dropna(subset=["lat", "lon"])
+    if pos.empty:
+        st.info("None of these fixes has a position.")
+        return
+    n = len(sub)
+    st.caption(f"{title} · {n:,} fixes")
+    rates = {k: float(flags[k].mean() * 100) for k in enabled}
+    top_k = max(rates, key=rates.get)
+    any_issue = float(flags[enabled].any(axis=1).mean() * 100)
+    cells = grid_stack(sub, flags_all, enabled, p["bin_m"], p["presence"],
+                       3 if scope == "Everything" else 2)
+    worst = int(cells["types"].max()) if len(cells) else 0
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Fixes with an issue", fmt_pct(any_issue),
+              help="Fixes with at least one of the counted issue types.")
+    k2.metric("Most common issue", ISSUE_LABELS[top_k],
+              help=f"{rates[top_k]:.1f}% of the fixes in view.")
+    k3.metric("Most stacked square",
+              f"{worst} issue type{'s' if worst != 1 else ''}",
+              help="The most different problems found together in a "
+                   "single square of the map.")
+
+    tow = "tower_lat" in sub.columns and bool(sub["tower_lat"].notna().any())
+    layer_opts = [x for x in LAYER_NAMES if x != "Cell towers" or tow]
+    r1, r2 = st.columns([1, 2])
+    mode = r1.radio("Map", ["Overlay layers", "Issue stack"],
+                    horizontal=True, key="dg_mode",
+                    help="Overlay layers draws every signal on its own "
+                         "layer. Issue stack adds the problems up per "
+                         "square.")
+    if scope == "Everything":
+        mode = "Issue stack"
+        st.caption("Everything is drawn as the issue stack — the separate "
+                   "layers would be too heavy for this many fixes.")
+    if mode == "Overlay layers":
+        picked = r2.multiselect("Layers", layer_opts, default=[],
+                                key="dg_layers", placeholder="All layers")
+        layers = picked or layer_opts
+    else:
+        layers = ["Route"] if scope != "Everything" else []
+    cols = ["round_id", "tag", "recorded", "lat", "lon", "prev_lat",
+            "prev_lon", "diff_s", "interval_s", "accuracy_m", "hdop", "snr",
+            "network", "prev_network", "net_change", "cell_id", "is_cached",
+            "speed_mps", "location"]
+    towers_pts = None
+    if tow and "Cell towers" in layers:
+        towers_pts = (sub.dropna(subset=["tower_lat", "tower_lon"])
+                      .groupby("cell_id")
+                      .agg(tower_lat=("tower_lat", "first"),
+                           tower_lon=("tower_lon", "first"),
+                           fixes=("lat", "size"),
+                           network=("network", "first")).reset_index())
+    names = sorted(str(x) for x in sub["network"].dropna().unique())
+    with st.spinner("Drawing map…"):
+        html = build_diag_map(
+            pos[cols], flags.loc[pos.index], cells, tuple(layers), p,
+            towers_pts, (float(pos["lat"].mean()), float(pos["lon"].mean())),
+            net_colours(names), mode == "Issue stack", tuple(enabled))
+    components.html(html, height=700, scrolling=False)
+    st.markdown(diag_legend(flags, layers, p, mode, p["presence"], tow),
+                unsafe_allow_html=True)
+    if not tow:
+        st.caption("Load a tower list under Network coverage → Cell "
+                   "inventory to add a Cell towers layer.")
+
+    labels = ["By hole", "Hotspots"] + (
+        ["Round timeline"] if scope == "Round" else [])
+    tabs = st.tabs(labels)
+    with tabs[0]:
+        _diag_by_hole(sub, flags_all, enabled)
+    with tabs[1]:
+        _diag_hotspots(cells, enabled)
+    if scope == "Round":
+        with tabs[2]:
+            render_round_overlay(sub, p)
+
+
+def _an_networks(w, p):
+    gd = group_delay(w, "network", AN_OK_S, AN_MAX_S, min_n=30)
+    if gd.empty:
+        st.info("There is no network information in these fixes yet "
+                "(MCC/MNC), or no network has 30 fixes to compare.")
+        return
+    top = gd.iloc[0]
+    if len(gd) >= 2:
+        low = gd.iloc[-1]
+        ratio = (top.pct_over_ok / low.pct_over_ok
+                 if low.pct_over_ok > 0.05 else None)
+        tail = (f" — {ratio:.1f}× as often." if ratio and ratio >= 1.5
+                else ".")
+        st.markdown(
+            f"**{top.network}** fixes arrive more than {AN_OK_S:g}s late "
+            f"{top.pct_over_ok:.1f}% of the time, against "
+            f"{low.pct_over_ok:.1f}% on **{low.network}**{tail}")
+    else:
+        st.markdown(f"Everything was on **{top.network}**: "
+                    f"{top.pct_over_ok:.1f}% of fixes arrived more than "
+                    f"{AN_OK_S:g}s late.")
+    st.altair_chart(
+        _bar(gd[["network", "pct_over_ok", "fixes"]], "network",
+             "pct_over_ok", f"% of fixes over {AN_OK_S:g}s",
+             [("network", "Network"), ("pct_over_ok", "Over 5s %"),
+              ("fixes", "Fixes")], colour=C_HIGH, height=260),
+        use_container_width=True)
+    shown = gd.rename(columns={
+        "network": "Network", "fixes": "Fixes", "rounds": "Rounds",
+        "median_diff": "Median delay (s)",
+        "pct_over_ok": f"Over {AN_OK_S:g}s %",
+        "pct_over_max": f"Over {AN_MAX_S:g}s %",
+        "pct_buffered": "Buffered %"}).round(1)
+    st.dataframe(shown, use_container_width=True, hide_index=True)
+
+    st.markdown("**What happens to the delay when the network changes**")
+    es = network_event_study(w)
+    n_ev = int(es["events"].max()) if len(es) else 0
+    if n_ev == 0:
+        st.success("No network changes in these fixes — the devices held "
+                   "one operator throughout.")
+    else:
+        line = alt.Chart(es.dropna(subset=["median_diff"])).mark_line(
+            point=True, color=C_ACCENT, strokeWidth=2.5).encode(
+            x=alt.X("offset:Q", title="Fixes before ← → after the change",
+                    axis=alt.Axis(values=list(range(-3, 4)),
+                                  tickMinStep=1)),
+            y=alt.Y("median_diff:Q", title="Median delay (s)"),
+            tooltip=[alt.Tooltip("offset:Q", title="Offset"),
+                     alt.Tooltip("median_diff:Q", title="Median delay (s)",
+                                 format=".1f"),
+                     alt.Tooltip("events:Q", title="Changes")])
+        mark = alt.Chart(pd.DataFrame({"x": [-0.5]})).mark_rule(
+            strokeDash=[4, 3], color="#FFFFFF", opacity=.6).encode(x="x:Q")
+        st.altair_chart((line + mark).properties(height=240),
+                        use_container_width=True)
+        before = float(np.nanmedian(es[es["offset"] < 0]["median_diff"]))
+        after = float(np.nanmedian(
+            es[(es["offset"] >= 0) & (es["offset"] <= 2)]["median_diff"]))
+        msg = (f"Across **{n_ev:,}** network changes the median delay goes "
+               f"from **{before:.0f}s** in the three fixes before to "
+               f"**{after:.0f}s** in the three from the change on.")
+        if after >= max(2 * before, before + 5):
+            st.warning(msg + " Network changes are followed by a delay "
+                             "jump.")
+        else:
+            st.info(msg + " No clear delay jump.")
+        tt = transition_table(w, 1)
+        if not tt.empty:
+            st.dataframe(tt.rename(columns={
+                "from_network": "From", "to_network": "To",
+                "events": "Changes", "before_s": "Delay before (s)",
+                "after_s": "Delay after (s)",
+                "change_s": "Change (s)"}).round(1),
+                use_container_width=True, hide_index=True)
+
+    cd = group_delay(w, "cell_id", AN_OK_S, AN_MAX_S, min_n=20)
+    if not cd.empty:
+        st.markdown("**Cells with the most late fixes** (20+ fixes)")
+        top15 = cd.head(15).copy()
+        top15["cell"] = top15["cell_id"].map(cell_both)
+        st.altair_chart(
+            _bar(top15[["cell_id", "pct_over_ok", "fixes"]], "cell_id",
+                 "pct_over_ok", f"% of fixes over {AN_OK_S:g}s",
+                 [("cell_id", "Cell"), ("pct_over_ok", "Over 5s %"),
+                  ("fixes", "Fixes")], colour=C_HIGH, height=260,
+                 angle=-35),
+            use_container_width=True)
+        st.dataframe(top15[["cell", "fixes", "rounds", "median_diff",
+                            "pct_over_ok", "pct_buffered"]].rename(columns={
+            "cell": "Cell", "fixes": "Fixes", "rounds": "Rounds",
+            "median_diff": "Median delay (s)",
+            "pct_over_ok": f"Over {AN_OK_S:g}s %",
+            "pct_buffered": "Buffered %"}).round(1),
+            use_container_width=True, hide_index=True)
+
+    if len(gd) >= 2 and w["hole"].notna().any():
+        d = w.dropna(subset=["network", "hole", "diff_s"]).copy()
+        d["_late"] = d["diff_s"] > AN_OK_S
+        pv = (d.groupby(["network", "hole"])
+              .agg(fixes=("_late", "size"), pct=("_late", "mean"))
+              .reset_index())
+        pv["pct"] *= 100.0
+        pv = pv[pv["fixes"] >= 10]
+        pv["hole"] = pv["hole"].astype(int)
+        if not pv.empty:
+            st.markdown("**Late fixes by network and hole** (10+ fixes in "
+                        "a square)")
+            st.altair_chart(
+                _heat_chart(pv, "hole", "network", f"% over {AN_OK_S:g}s",
+                            xsort=sorted(pv["hole"].unique().tolist()),
+                            height=max(120, 36 * pv["network"].nunique()),
+                            fmt=".0f", angle=0),
+                use_container_width=True)
+
+    if "dist_tower_m" in w.columns and w["dist_tower_m"].notna().any():
+        st.markdown("**Delay against distance to the serving tower**")
+        edges = [0, 100, 250, 500, 1000, 2000, np.inf]
+        labels = ["<100 m", "100–250 m", "250–500 m", "0.5–1 km",
+                  "1–2 km", "2 km+"]
+        bt = binned(w, "dist_tower_m", edges, labels, AN_OK_S, p["gap_s"])
+        st.altair_chart(
+            _bar(bt[["bin", "pct_delayed", "fixes"]], "bin", "pct_delayed",
+                 f"% over {AN_OK_S:g}s",
+                 [("bin", "Distance"), ("pct_delayed", "Over 5s %"),
+                  ("fixes", "Fixes")], x_title="Distance to tower",
+                 colour=C_ACCENT, height=240),
+            use_container_width=True)
+    else:
+        st.caption("Load a tower list under Network coverage → Cell "
+                   "inventory to see delay against distance to the tower.")
+
+
+def _an_links(w, p):
+    factors = {
+        "GPS accuracy": ("accuracy_m", [0, 1, 2, 5, 10, 20, np.inf],
+                         ["<1 m", "1–2 m", "2–5 m", "5–10 m", "10–20 m",
+                          "20 m+"]),
+        "HDOP": ("hdop", [0, 0.8, 1.2, 2, 5, np.inf],
+                 ["<0.8", "0.8–1.2", "1.2–2", "2–5", "5+"]),
+        "SNR": ("snr", [-np.inf, 15, 20, 25, 30, np.inf],
+                ["<15", "15–20", "20–25", "25–30", "30+"]),
+        "Speed": ("speed_mps", [0, 1, 3, 6, 10, 15, np.inf],
+                  ["<1 m/s", "1–3", "3–6", "6–10", "10–15", "15+"]),
+    }
+    if "dist_tower_m" in w.columns:
+        factors["Distance to tower"] = (
+            "dist_tower_m", [0, 100, 250, 500, 1000, 2000, np.inf],
+            ["<100 m", "100–250 m", "250–500 m", "0.5–1 km", "1–2 km",
+             "2 km+"])
+    avail = {k: v for k, v in factors.items() if w[v[0]].notna().sum() >= 30}
+    if not avail:
+        st.info("Not enough GPS accuracy, HDOP or SNR readings to compare.")
+        return
+    c1, c2 = st.columns(2)
+    fac = c1.selectbox("Compare against", list(avail), key="an_factor")
+    measures = {"Share with a recording gap": ("pct_gaps", "interval_s",
+                                               "% with a gap", ".1f"),
+                "Average interval": ("mean_interval", "interval_s",
+                                     "Average interval (s)", ".0f"),
+                "Median interval": ("median_interval", "interval_s",
+                                    "Median interval (s)", ".0f"),
+                "Share of fixes delayed": ("pct_delayed", "diff_s",
+                                           f"% over {AN_OK_S:g}s", ".1f"),
+                "Average delay": ("mean_diff", "diff_s",
+                                  "Average delay (s)", ".0f"),
+                "Median delay": ("median_diff", "diff_s",
+                                 "Median delay (s)", ".0f")}
+    mea = c2.selectbox("Measure", list(measures), key="an_measure")
+    ycol, ynum, ytitle, fmt = measures[mea]
+    col, edges, labels = avail[fac]
+    bt = binned(w, col, edges, labels, AN_OK_S, p["gap_s"])
+    st.altair_chart(
+        _bar(bt[["bin", ycol, "fixes"]], "bin", ycol, ytitle,
+             [("bin", fac), (ycol, ytitle), ("fixes", "Fixes")],
+             x_title=fac, colour=C_ACCENT, fmt=fmt, height=300),
+        use_container_width=True)
+    rho, n = spearman(w[col], w[ynum])
+    tail = f" (rank correlation {rho:+.2f})." if rho is not None else "."
+    st.markdown(f"Across **{n:,}** fixes, **{fac.lower()}** and "
+                f"**{mea.lower()}** show **{describe_link(rho)}**{tail}")
+    st.caption("Averages and shares pick up a few long gaps or late fixes; "
+               "a median hides them when most fixes are normal.")
+    st.dataframe(bt.rename(columns={
+        "bin": fac, "fixes": "Fixes", "median_interval": "Median interval (s)",
+        "mean_interval": "Average interval (s)",
+        "median_diff": "Median delay (s)", "mean_diff": "Average delay (s)",
+        "pct_delayed": f"Over {AN_OK_S:g}s %",
+        "pct_gaps": "With a gap %"}).round(1),
+        use_container_width=True, hide_index=True)
+
+    names = {"diff_s": "Delay", "interval_s": "Interval",
+             "accuracy_m": "GPS accuracy", "hdop": "HDOP", "snr": "SNR",
+             "speed_mps": "Speed", "dist_tower_m": "Distance to tower"}
+    use = [c for c in names if c in w.columns and w[c].notna().sum() >= 30]
+    if len(use) < 3:
+        return
+    cm = corr_matrix(w, use)
+    cm = cm.dropna(subset=["rho"]).copy()
+    cm["pct"] = cm["rho"]
+    cm["A"] = cm["a"].map(names)
+    cm["B"] = cm["b"].map(names)
+    order = [names[c] for c in use]
+    base = alt.Chart(cm).encode(
+        x=alt.X("A:N", title="", sort=order,
+                axis=alt.Axis(labelAngle=-30)),
+        y=alt.Y("B:N", title="", sort=order))
+    rect = base.mark_rect().encode(
+        color=alt.Color("rho:Q", title="Link", scale=alt.Scale(
+            domain=[-1, 0, 1], range=["#4CC9F0", "#161D26", "#FB923C"])),
+        tooltip=[alt.Tooltip("A:N", title="Measure"),
+                 alt.Tooltip("B:N", title="against"),
+                 alt.Tooltip("rho:Q", title="Link", format="+.2f"),
+                 alt.Tooltip("n:Q", title="Fixes")])
+    text = base.mark_text(fontSize=11).encode(
+        text=alt.Text("rho:Q", format="+.2f"), color=alt.value("#F5F5F5"))
+    st.markdown("**How all the measures move together**")
+    st.altair_chart((rect + text).properties(height=max(240, 44 * len(use))),
+                    use_container_width=True)
+    off = cm[cm["a"] != cm["b"]]
+    if not off.empty:
+        s = off.loc[off["rho"].abs().idxmax()]
+        st.markdown(f"Strongest link: **{names[s['a']]} and "
+                    f"{names[s['b']]}** ({s['rho']:+.2f}) — "
+                    f"{describe_link(float(s['rho']))}.")
+    st.caption("Rank correlation, from −1 to +1. Orange: the two rise "
+               "together. Blue: one falls as the other rises. Dark: no "
+               "link. A link points at a connection worth checking; it "
+               "does not prove one thing causes the other.")
+
+
+def _an_rounds(w, p, df):
+    scope, sub, title = scope_picker(w, "ar")
+    flags_all = issue_flags(w, p)
+    sf = flags_all.loc[sub.index]
+    sc = round_scorecard(sub, sf, AN_OK_S)
+    st.caption(f"{title} · {len(sub):,} fixes")
+    if scope != "Round":
+        shown = pd.DataFrame({
+            "Tag": sc["tag"].astype(str), "Start": sc["start"],
+            "Fixes": sc["fixes"], "Late fixes %": sc["pct_delayed"].round(1),
+            "Longest gap (s)": sc["longest_gap_s"].round(0),
+            "Network changes": sc["net_changes"],
+            "Poor GPS %": sc["pct_poor_gps"].round(1),
+            "HDOP / SNR %": sc["pct_signal"].round(1),
+            "Buffered %": sc["pct_buffered"].round(1),
+            "Issues per fix": sc["issue_load"].round(2)})
+        pct = st.column_config.ProgressColumn(min_value=0, max_value=100,
+                                              format="%.1f%%")
+        st.markdown("**Round scorecard**")
+        st.dataframe(shown, use_container_width=True, hide_index=True,
+                     column_config={"Late fixes %": pct, "Poor GPS %": pct,
+                                    "HDOP / SNR %": pct,
+                                    "Buffered %": pct})
+        if len(sc) >= 2:
+            t = sc.copy()
+            t["round"] = [f"{i + 1:02d} · tag {r.tag} · "
+                          f"{r.start:%d %b %H:%M}"
+                          for i, r in enumerate(t.itertuples())]
+            order = list(t["round"])
+            x = alt.X("round:N", sort=order, title="",
+                      axis=alt.Axis(labelAngle=-40, labelLimit=180))
+            bars = alt.Chart(t).mark_bar(color=C_HIGH, opacity=.85).encode(
+                x=x, y=alt.Y("pct_delayed:Q",
+                             title=f"% of fixes over {AN_OK_S:g}s"),
+                tooltip=[alt.Tooltip("round:N", title="Round"),
+                         alt.Tooltip("pct_delayed:Q", title="Late %",
+                                     format=".1f"),
+                         alt.Tooltip("net_changes:Q",
+                                     title="Network changes")])
+            line = alt.Chart(t).mark_line(color=C_ACCENT, point=True).encode(
+                x=x, y=alt.Y("net_changes:Q", title="Network changes",
+                             axis=alt.Axis(titleColor=C_ACCENT)))
+            st.markdown("**Late fixes and network changes, round by round**")
+            st.altair_chart(
+                alt.layer(bars, line).resolve_scale(y="independent")
+                .properties(height=280), use_container_width=True)
+        if len(sc) >= 4:
+            xs = {"Network changes": "net_changes",
+                  "Poor GPS %": "pct_poor_gps",
+                  "HDOP / SNR %": "pct_signal",
+                  "Buffered %": "pct_buffered",
+                  "Issues per fix": "issue_load"}
+            ys = {"Late fixes %": "pct_delayed",
+                  "Longest gap (s)": "longest_gap_s",
+                  "Median delay (s)": "median_diff"}
+            c1, c2 = st.columns(2)
+            first = next((i for i, c in enumerate(xs.values())
+                          if sc[c].nunique() > 1), 0)
+            xl = c1.selectbox("Round trend: compare", list(xs),
+                              index=first, key="ar_x")
+            yl = c2.selectbox("against", list(ys), key="ar_y")
+            xc, yc = xs[xl], ys[yl]
+            pts = sc[[xc, yc, "fixes", "tag", "start"]].dropna().copy()
+            pts["start"] = pts["start"].astype(str).str[:16]
+            if pts[xc].nunique() < 2 or pts[yc].nunique() < 2:
+                same = xl if pts[xc].nunique() < 2 else yl
+                st.info(f"{same} is the same in every round here, so "
+                        "there is no trend to compare.")
+            else:
+                sca = alt.Chart(pts).mark_circle(
+                    color=C_ACCENT, opacity=.8).encode(
+                    x=alt.X(f"{xc}:Q", title=xl,
+                            scale=alt.Scale(zero=False)),
+                    y=alt.Y(f"{yc}:Q", title=yl,
+                            scale=alt.Scale(zero=False)),
+                    size=alt.Size("fixes:Q", legend=None),
+                    tooltip=[alt.Tooltip("tag:N", title="Tag"),
+                             alt.Tooltip("start:N", title="Start"),
+                             alt.Tooltip(f"{xc}:Q", title=xl, format=".1f"),
+                             alt.Tooltip(f"{yc}:Q", title=yl, format=".1f")])
+                st.altair_chart(sca.properties(height=260),
+                                use_container_width=True)
+                rho, n = spearman(pts[xc], pts[yc], min_n=4)
+                if rho is not None:
+                    st.markdown(f"Across **{n}** rounds, **{xl.lower()}** "
+                                f"and **{yl.lower()}** show "
+                                f"**{describe_link(rho)}** "
+                                f"(rank correlation {rho:+.2f}).")
+
+    st.markdown("**An example round, overlaid**")
+    if scope == "Round":
+        ex = sub
+    else:
+        rt = rounds_table(sub)
+        busiest = sc.sort_values("issue_load", ascending=False).iloc[0]
+        default = int(rt.index[rt["round_id"] == busiest["round_id"]][0])
+        pick = st.selectbox("Example round (the busiest one first)",
+                            rt["label"].tolist(), index=default,
+                            key="ar_example")
+        rid = rt.loc[rt["label"] == pick, "round_id"].iloc[0]
+        ex = sub[sub["round_id"] == rid]
+    render_round_overlay(ex, p)
+
+
+def render_analysis_view(df):
+    st.subheader("Analysis")
+    st.caption("Looks for links between measures: which networks go with "
+               "late fixes, whether recording gaps follow poor GPS, and "
+               "how the pattern shows up round by round.")
+    w = _diag_frame(df, with_towers=True)
+    sub = st.radio("Analysis", ["Networks & delay", "Interval & GPS",
+                                "Rounds"], horizontal=True,
+                   label_visibility="collapsed", key="an_sub")
+    p = _issue_params(w, df)
+    if sub == "Networks & delay":
+        _an_networks(w, p)
+    elif sub == "Interval & GPS":
+        _an_links(w, p)
+    else:
+        _an_rounds(w, p, df)
+
+
+_sw1, _sw2 = st.columns([5, 1])
 with _sw1:
     _view = st.radio(
         "View", ["Delay diagnostics", "Network coverage", "GPS accuracy",
-                 "Buffered fixes"],
+                 "Buffered fixes", "Diagnose", "Analysis"],
         horizontal=True, label_visibility="collapsed", key="view_mode")
 
 if _view == "GPS accuracy":
@@ -3013,6 +4220,12 @@ if _view == "Network coverage":
     st.stop()
 if _view == "Buffered fixes":
     render_buffered_view(df)
+    st.stop()
+if _view == "Diagnose":
+    render_diagnose_view(df)
+    st.stop()
+if _view == "Analysis":
+    render_analysis_view(df)
     st.stop()
 
 MEASURES = {

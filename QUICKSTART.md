@@ -62,6 +62,8 @@ Choose the dates and press **Fetch rounds & fixes**.
 | **Network coverage** | Which operator and cell was each unit on? |
 | **GPS accuracy** | How tight was the position fix? |
 | **Buffered fixes** | Where did units store data and send it late? |
+| **Diagnose** | What went wrong, where, for one tag or round — every signal on one map. |
+| **Analysis** | Which networks, GPS conditions and rounds go with late fixes? |
 
 Next to the views, **Diff / Interval** decides what is being measured.
 Diff is how late a fix arrived; Interval is how long the unit went between
@@ -174,6 +176,50 @@ is the **Accuracy** tab beside it).
 What the pattern tells you: mostly SNR failures point at sky view or an
 antenna; mostly HDOP failures point at satellite geometry (trees,
 buildings, a steep hole); one tag far worse than the rest is that unit.
+
+## Diagnose: everything on top of each other
+
+Pick **Tag** (all its rounds, or choose some), **Round**, or **Everything**.
+
+- **Overlay layers** draws each signal as its own layer, switched on and
+  off in the layer box on the map: *Route*, *Delay*, *Gaps* (no fix for a
+  long time), *GPS accuracy*, *HDOP / SNR*, *Network* (the track in the
+  operator's colour, ringed where it changed), *Buffered*, *GPS jumps*
+  (implausible speed between two fixes) and, once a tower list is loaded,
+  *Cell towers*. Markers show the worst fixes first.
+- **Issue stack** adds the problems up per square (25 m to start). A
+  square counts an issue once 20% of its fixes have it; its colour is how
+  many *different* issue types stack in it — yellow one, orange two, red
+  three, purple four or more — and hovering lists which ones. **Everything**
+  is always drawn this way: it is the whole dataset compiled into one map,
+  so hotspots where several problems coincide stand out.
+- **What counts as an issue** (expander) holds the thresholds: delay above
+  60 s, recording gap above about three times the normal interval, accuracy
+  worse than 10 m, a jump above 15 m/s, and the square size. HDOP / SNR
+  uses the Fix limits from the GPS accuracy page. You can also choose which
+  issue types are counted.
+- Below the map: **By hole** (share of each hole's fixes with each issue),
+  **Hotspots** (the 15 squares with the most issue types, downloadable) and,
+  for a single round, **Round timeline** — delay, interval, accuracy, HDOP
+  and SNR on the same clock, with network changes marked.
+- A tower list loaded under *Network coverage → Cell inventory* is kept for
+  the session and adds the *Cell towers* layer here.
+
+## Analysis: looking for links
+
+- **Networks & delay** — how often fixes arrive late on each network and
+  cell, and what the delay does in the three fixes before and after a
+  network change (with a from → to table), plus late fixes by network and
+  hole, and by distance to the tower once towers are loaded.
+- **Interval & GPS** — pick a factor (GPS accuracy, HDOP, SNR, speed,
+  distance to tower) and a measure. It starts on *Share with a recording
+  gap*, because a median can look flat when only a few fixes have a long
+  gap. A sentence gives the strength of the link, and a matrix shows how
+  every measure moves with every other. A link is a lead to check, not
+  proof of cause.
+- **Rounds** — a scorecard for each round, late fixes and network changes
+  round by round, a scatter comparing two round measures, and one example
+  round with every measure overlaid (the busiest is chosen first).
 
 ## Cell IDs: hex and decimal
 

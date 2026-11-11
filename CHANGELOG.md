@@ -10,6 +10,36 @@ Buffered fixes views, the drill-down and "where to look" suggestion
 tabs, and client export; v4.0 introduced the landing-page-into-sidebar
 flow. From here on, changes are logged properly.
 
+## v7.0
+
+**Added**
+- **Diagnose** view. Pick a tag (all or some of its rounds), a round, or
+  everything. *Overlay layers* draws route, delay, recording gaps, GPS
+  accuracy, HDOP / SNR, network (with change markers), buffered fixes, GPS
+  jumps and cell towers as separate layers you can switch on and off.
+  *Issue stack* adds the problems up per square and colours it by how many
+  different issue types coincide, with a tooltip naming them. Everything is
+  always drawn as the issue stack. Below the map: issues by hole, a hotspot
+  table (CSV download) and, for one round, a timeline of every measure on
+  one clock. Thresholds sit in a *What counts as an issue* expander.
+- **Analysis** view. *Networks & delay*: late fixes by network and cell,
+  the delay before and after a network change, late fixes by network and
+  hole, and delay against distance to the tower. *Interval & GPS*: a factor
+  against a measure with the strength of the link in words, and a
+  correlation matrix of all measures. *Rounds*: a scorecard, late fixes and
+  network changes round by round, a scatter across rounds, and one example
+  round with all measures overlaid.
+- GPS jumps: a fix whose implied speed from the previous fix is above a
+  threshold (15 m/s to start).
+- The tower list loaded in Network coverage is now kept for the session and
+  reused by the new views (and by Network coverage when you come back).
+
+**Changed**
+- The view switch has two more options and more room.
+- *Interval & GPS* starts on *Share with a recording gap*, with average
+  interval and average delay alongside the medians. A median can sit flat
+  while a minority of fixes have long gaps.
+
 ## v6.0
 
 **Changed**
